@@ -1,6 +1,6 @@
-import { ArrayVector, createTheme, DataFrame, FieldType, MutableDataFrame } from '@grafana/data';
+import { DataFrame, FieldType, createDataFrame, NodeGraphDataFrameFieldNames } from '@grafana/data';
 
-import { NodeGraphOptions } from './types';
+import { NodeDatum, NodeGraphOptions } from './types';
 import {
   findConnectedNodesForEdge,
   findConnectedNodesForNode,
@@ -13,196 +13,27 @@ import {
 } from './utils';
 
 describe('processNodes', () => {
-  const theme = createTheme();
-
   it('handles empty args', async () => {
-    expect(processNodes(undefined, undefined, theme)).toEqual({ nodes: [], edges: [] });
+    expect(processNodes(undefined, undefined)).toEqual({ nodes: [], edges: [] });
   });
 
   it('returns proper nodes and edges', async () => {
     const { nodes, edges, legend } = processNodes(
       makeNodesDataFrame(3),
       makeEdgesDataFrame([
-        [0, 1],
-        [0, 2],
-        [1, 2],
-      ]),
-      theme
+        { source: '0', target: '1' },
+        { source: '0', target: '2' },
+        { source: '1', target: '2' },
+      ])
     );
 
-    const colorField = {
-      config: {
-        color: {
-          mode: 'continuous-GrYlRd',
-        },
-      },
-      index: 7,
-      name: 'color',
-      type: 'number',
-      values: new ArrayVector([0.5, 0.5, 0.5]),
-    };
-
     expect(nodes).toEqual([
-      {
-        arcSections: [
-          {
-            config: {
-              color: {
-                fixedColor: 'green',
-              },
-            },
-            name: 'arc__success',
-            type: 'number',
-            values: new ArrayVector([0.5, 0.5, 0.5]),
-          },
-          {
-            config: {
-              color: {
-                fixedColor: 'red',
-              },
-            },
-            name: 'arc__errors',
-            type: 'number',
-            values: new ArrayVector([0.5, 0.5, 0.5]),
-          },
-        ],
-        color: colorField,
-        dataFrameRowIndex: 0,
-        id: '0',
-        incoming: 0,
-        mainStat: {
-          config: {},
-          index: 3,
-          name: 'mainstat',
-          type: 'number',
-          values: new ArrayVector([0.1, 0.1, 0.1]),
-        },
-        secondaryStat: {
-          config: {},
-          index: 4,
-          name: 'secondarystat',
-          type: 'number',
-          values: new ArrayVector([2, 2, 2]),
-        },
-        subTitle: 'service',
-        title: 'service:0',
-      },
-      {
-        arcSections: [
-          {
-            config: {
-              color: {
-                fixedColor: 'green',
-              },
-            },
-            name: 'arc__success',
-            type: 'number',
-            values: new ArrayVector([0.5, 0.5, 0.5]),
-          },
-          {
-            config: {
-              color: {
-                fixedColor: 'red',
-              },
-            },
-            name: 'arc__errors',
-            type: 'number',
-            values: new ArrayVector([0.5, 0.5, 0.5]),
-          },
-        ],
-        color: colorField,
-        dataFrameRowIndex: 1,
-        id: '1',
-        incoming: 1,
-        mainStat: {
-          config: {},
-          index: 3,
-          name: 'mainstat',
-          type: 'number',
-          values: new ArrayVector([0.1, 0.1, 0.1]),
-        },
-        secondaryStat: {
-          config: {},
-          index: 4,
-          name: 'secondarystat',
-          type: 'number',
-          values: new ArrayVector([2, 2, 2]),
-        },
-        subTitle: 'service',
-        title: 'service:1',
-      },
-      {
-        arcSections: [
-          {
-            config: {
-              color: {
-                fixedColor: 'green',
-              },
-            },
-            name: 'arc__success',
-            type: 'number',
-            values: new ArrayVector([0.5, 0.5, 0.5]),
-          },
-          {
-            config: {
-              color: {
-                fixedColor: 'red',
-              },
-            },
-            name: 'arc__errors',
-            type: 'number',
-            values: new ArrayVector([0.5, 0.5, 0.5]),
-          },
-        ],
-        color: colorField,
-        dataFrameRowIndex: 2,
-        id: '2',
-        incoming: 2,
-        mainStat: {
-          config: {},
-          index: 3,
-          name: 'mainstat',
-          type: 'number',
-          values: new ArrayVector([0.1, 0.1, 0.1]),
-        },
-        secondaryStat: {
-          config: {},
-          index: 4,
-          name: 'secondarystat',
-          type: 'number',
-          values: new ArrayVector([2, 2, 2]),
-        },
-        subTitle: 'service',
-        title: 'service:2',
-      },
+      makeNodeDatum(),
+      makeNodeDatum({ dataFrameRowIndex: 1, id: '1', incoming: 1, title: 'service:1' }),
+      makeNodeDatum({ dataFrameRowIndex: 2, id: '2', incoming: 2, title: 'service:2' }),
     ]);
 
-    expect(edges).toEqual([
-      {
-        dataFrameRowIndex: 0,
-        id: '0--1',
-        mainStat: '',
-        secondaryStat: '',
-        source: '0',
-        target: '1',
-      },
-      {
-        dataFrameRowIndex: 1,
-        id: '0--2',
-        mainStat: '',
-        secondaryStat: '',
-        source: '0',
-        target: '2',
-      },
-      {
-        dataFrameRowIndex: 2,
-        id: '1--2',
-        mainStat: '',
-        secondaryStat: '',
-        source: '1',
-        target: '2',
-      },
-    ]);
+    expect(edges).toEqual([makeEdgeDatum('0--1', 0), makeEdgeDatum('0--2', 1), makeEdgeDatum('1--2', 2)]);
 
     expect(legend).toEqual([
       {
@@ -216,29 +47,61 @@ describe('processNodes', () => {
     ]);
   });
 
+  it('returns nodes just from edges dataframe', () => {
+    const { nodes, edges } = processNodes(
+      undefined,
+      makeEdgesDataFrame([
+        { source: '0', target: '1', mainstat: 1, secondarystat: 1 },
+        { source: '0', target: '2', mainstat: 1, secondarystat: 1 },
+        { source: '1', target: '2', mainstat: 1, secondarystat: 1 },
+      ])
+    );
+
+    expect(nodes).toEqual([
+      expect.objectContaining(makeNodeFromEdgeDatum({ dataFrameRowIndex: 0, title: '0' })),
+      expect.objectContaining(makeNodeFromEdgeDatum({ dataFrameRowIndex: 1, id: '1', incoming: 1, title: '1' })),
+      expect.objectContaining(makeNodeFromEdgeDatum({ dataFrameRowIndex: 2, id: '2', incoming: 2, title: '2' })),
+    ]);
+
+    expect(nodes[0].mainStat?.values).toEqual([undefined, 1, 2]);
+    expect(nodes[0].secondaryStat?.values).toEqual([undefined, 1, 2]);
+
+    expect(nodes[0].mainStat).toEqual(nodes[1].mainStat);
+    expect(nodes[0].mainStat).toEqual(nodes[2].mainStat);
+
+    expect(nodes[0].secondaryStat).toEqual(nodes[1].secondaryStat);
+    expect(nodes[0].secondaryStat).toEqual(nodes[2].secondaryStat);
+
+    expect(edges).toEqual([
+      makeEdgeDatum('0--1', 0, '1.00', '1.00'),
+      makeEdgeDatum('0--2', 1, '1.00', '1.00'),
+      makeEdgeDatum('1--2', 2, '1.00', '1.00'),
+    ]);
+  });
+
   it('detects dataframes correctly', () => {
     const validFrames = [
-      new MutableDataFrame({
+      createDataFrame({
         refId: 'hasPreferredVisualisationType',
         fields: [],
         meta: {
           preferredVisualisationType: 'nodeGraph',
         },
       }),
-      new MutableDataFrame({
+      createDataFrame({
         refId: 'hasName',
         fields: [],
         name: 'nodes',
       }),
-      new MutableDataFrame({
+      createDataFrame({
         refId: 'nodes', // hasRefId
         fields: [],
       }),
-      new MutableDataFrame({
+      createDataFrame({
         refId: 'hasValidNodesShape',
         fields: [{ name: 'id', type: FieldType.string }],
       }),
-      new MutableDataFrame({
+      createDataFrame({
         refId: 'hasValidEdgesShape',
         fields: [
           { name: 'id', type: FieldType.string },
@@ -248,7 +111,7 @@ describe('processNodes', () => {
       }),
     ];
     const invalidFrames = [
-      new MutableDataFrame({
+      createDataFrame({
         refId: 'invalidData',
         fields: [],
       }),
@@ -261,7 +124,7 @@ describe('processNodes', () => {
   });
 
   it('getting fields is case insensitive', () => {
-    const nodeFrame = new MutableDataFrame({
+    const nodeFrame = createDataFrame({
       refId: 'nodes',
       fields: [
         { name: 'id', type: FieldType.string, values: ['id'] },
@@ -269,6 +132,7 @@ describe('processNodes', () => {
         { name: 'SUBTITLE', type: FieldType.string, values: ['subTitle'] },
         { name: 'mainstat', type: FieldType.string, values: ['mainStat'] },
         { name: 'seconDarysTat', type: FieldType.string, values: ['secondaryStat'] },
+        { name: 'nodeRadius', type: FieldType.number, values: [20] },
       ],
     });
 
@@ -279,7 +143,7 @@ describe('processNodes', () => {
     expect(nodeFields.mainStat).toBeDefined();
     expect(nodeFields.secondaryStat).toBeDefined();
 
-    const edgeFrame = new MutableDataFrame({
+    const edgeFrame = createDataFrame({
       refId: 'nodes',
       fields: [
         { name: 'id', type: FieldType.string, values: ['id'] },
@@ -299,18 +163,18 @@ describe('processNodes', () => {
 
   it('interpolates panel options correctly', () => {
     const frames = [
-      new MutableDataFrame({
+      createDataFrame({
         refId: 'nodes',
         fields: [
           { name: 'id', type: FieldType.string },
           { name: 'mainStat', type: FieldType.string },
           { name: 'secondaryStat', type: FieldType.string },
           { name: 'arc__primary', type: FieldType.string },
-          { name: 'arc__secondary', type: FieldType.string },
+          { name: 'arc__Secondary', type: FieldType.string },
           { name: 'arc__tertiary', type: FieldType.string },
         ],
       }),
-      new MutableDataFrame({
+      createDataFrame({
         refId: 'edges',
         fields: [
           { name: 'id', type: FieldType.string },
@@ -328,7 +192,7 @@ describe('processNodes', () => {
         secondaryStatUnit: 'ms/r',
         arcs: [
           { field: 'arc__primary', color: 'red' },
-          { field: 'arc__secondary', color: 'yellow' },
+          { field: 'arc__Secondary', color: 'yellow' },
           { field: 'arc__tertiary', color: '#dd40ec' },
         ],
       },
@@ -348,7 +212,7 @@ describe('processNodes', () => {
     expect(nodesFrame?.fields.find((f) => f.name === 'arc__primary')?.config).toEqual({
       color: { mode: 'fixed', fixedColor: 'red' },
     });
-    expect(nodesFrame?.fields.find((f) => f.name === 'arc__secondary')?.config).toEqual({
+    expect(nodesFrame?.fields.find((f) => f.name === 'arc__Secondary')?.config).toEqual({
       color: { mode: 'fixed', fixedColor: 'yellow' },
     });
     expect(nodesFrame?.fields.find((f) => f.name === 'arc__tertiary')?.config).toEqual({
@@ -360,20 +224,60 @@ describe('processNodes', () => {
     expect(edgesFrame?.fields.find((f) => f.name === 'mainStat')?.config).toEqual({ unit: 'r/sec' });
     expect(edgesFrame?.fields.find((f) => f.name === 'secondaryStat')?.config).toEqual({ unit: 'ft^2' });
   });
+
+  it('processes nodes with fixedX/Y', async () => {
+    const nodesFrame = makeNodesDataFrame(3);
+    nodesFrame.fields.push({
+      name: NodeGraphDataFrameFieldNames.fixedX,
+      type: FieldType.number,
+      values: [1, 2, 3],
+      config: {},
+    });
+
+    nodesFrame.fields.push({
+      name: NodeGraphDataFrameFieldNames.fixedY,
+      type: FieldType.number,
+      values: [1, 2, 3],
+      config: {},
+    });
+    const result = processNodes(nodesFrame, undefined);
+    expect(result.hasFixedPositions).toBe(true);
+    expect(result.nodes[0].x).toBe(1);
+    expect(result.nodes[0].y).toBe(1);
+  });
+
+  it('throws error if fixedX/Y is used incorrectly', async () => {
+    const nodesFrame = makeNodesDataFrame(3);
+    nodesFrame.fields.push({
+      name: NodeGraphDataFrameFieldNames.fixedX,
+      type: FieldType.number,
+      values: [undefined, 2, 3],
+      config: {},
+    });
+
+    expect(() => processNodes(nodesFrame, undefined)).toThrow(/fixedX/);
+
+    // We still have one undefined value in fixedX field so this should still fail
+    nodesFrame.fields.push({
+      name: NodeGraphDataFrameFieldNames.fixedY,
+      type: FieldType.number,
+      values: [1, 2, 3],
+      config: {},
+    });
+
+    expect(() => processNodes(nodesFrame, undefined)).toThrow(/fixedX/);
+  });
 });
 
 describe('finds connections', () => {
-  const theme = createTheme();
-
   it('finds connected nodes given an edge id', () => {
     const { nodes, edges } = processNodes(
       makeNodesDataFrame(3),
       makeEdgesDataFrame([
-        [0, 1],
-        [0, 2],
-        [1, 2],
-      ]),
-      theme
+        { source: '0', target: '1' },
+        { source: '0', target: '2' },
+        { source: '1', target: '2' },
+      ])
     );
 
     const linked = findConnectedNodesForEdge(nodes, edges, edges[0].id);
@@ -384,14 +288,112 @@ describe('finds connections', () => {
     const { nodes, edges } = processNodes(
       makeNodesDataFrame(4),
       makeEdgesDataFrame([
-        [0, 1],
-        [0, 2],
-        [1, 2],
-      ]),
-      theme
+        { source: '0', target: '1' },
+        { source: '0', target: '2' },
+        { source: '1', target: '2' },
+      ])
     );
 
     const linked = findConnectedNodesForNode(nodes, edges, nodes[0].id);
     expect(linked).toEqual(['0', '1', '2']);
   });
 });
+
+function makeNodeDatum(options: Partial<NodeDatum> = {}) {
+  const colorField = {
+    config: {
+      color: {
+        mode: 'continuous-GrYlRd',
+      },
+    },
+    index: 7,
+    name: 'color',
+    type: 'number',
+    values: [0.5, 0.5, 0.5],
+  };
+
+  return {
+    arcSections: [
+      {
+        config: {
+          color: {
+            fixedColor: 'green',
+            mode: 'fixed',
+          },
+        },
+        name: 'arc__success',
+        type: 'number',
+        values: [0.5, 0.5, 0.5],
+      },
+      {
+        config: {
+          color: {
+            fixedColor: 'red',
+            mode: 'fixed',
+          },
+        },
+        name: 'arc__errors',
+        type: 'number',
+        values: [0.5, 0.5, 0.5],
+      },
+    ],
+    color: colorField,
+    dataFrameRowIndex: 0,
+    highlighted: false,
+    id: '0',
+    incoming: 0,
+    mainStat: {
+      config: {},
+      index: 3,
+      name: 'mainstat',
+      type: 'number',
+      values: [0.1, 0.1, 0.1],
+    },
+    secondaryStat: {
+      config: {},
+      index: 4,
+      name: 'secondarystat',
+      type: 'number',
+      values: [2, 2, 2],
+    },
+    subTitle: 'service',
+    title: 'service:0',
+    icon: 'database',
+    nodeRadius: {
+      config: {},
+      index: 9,
+      name: 'noderadius',
+      type: 'number',
+      values: [40, 40, 40],
+    },
+    ...options,
+  };
+}
+
+function makeEdgeDatum(id: string, index: number, mainStat = '', secondaryStat = '') {
+  return {
+    dataFrameRowIndex: index,
+    id,
+    mainStat,
+    secondaryStat,
+    source: id.split('--')[0],
+    target: id.split('--')[1],
+    sourceNodeRadius: 40,
+    targetNodeRadius: 40,
+    highlighted: false,
+    thickness: 1,
+  };
+}
+
+function makeNodeFromEdgeDatum(options: Partial<NodeDatum> = {}): NodeDatum {
+  return {
+    arcSections: [],
+    dataFrameRowIndex: 0,
+    id: '0',
+    incoming: 0,
+    subTitle: '',
+    title: 'service:0',
+    ...options,
+    highlighted: false,
+  };
+}

@@ -1,8 +1,10 @@
-import React from 'react';
+import { css } from '@emotion/css';
+import { memo } from 'react';
 
-import { LinkTarget } from '@grafana/data';
+import { GrafanaTheme2, LinkTarget } from '@grafana/data';
 import { config } from '@grafana/runtime';
-import { Icon, IconName } from '@grafana/ui';
+import { Icon, IconName, useStyles2 } from '@grafana/ui';
+import { t } from 'app/core/internationalization';
 
 export interface FooterLink {
   target: LinkTarget;
@@ -17,21 +19,21 @@ export let getFooterLinks = (): FooterLink[] => {
     {
       target: '_blank',
       id: 'documentation',
-      text: 'Documentation',
+      text: t('nav.help/documentation', 'Documentation'),
       icon: 'document-info',
       url: 'https://grafana.com/docs/grafana/latest/?utm_source=grafana_footer',
     },
     {
       target: '_blank',
       id: 'support',
-      text: 'Support',
+      text: t('nav.help/support', 'Support'),
       icon: 'question-circle',
       url: 'https://grafana.com/products/enterprise/?utm_source=grafana_footer',
     },
     {
       target: '_blank',
       id: 'community',
-      text: 'Community',
+      text: t('nav.help/community', 'Community'),
       icon: 'comments-alt',
       url: 'https://community.grafana.com/?utm_source=grafana_footer',
     },
@@ -39,42 +41,39 @@ export let getFooterLinks = (): FooterLink[] => {
 };
 
 export function getVersionMeta(version: string) {
-  const containsHyphen = version.includes('-');
   const isBeta = version.includes('-beta');
 
   return {
-    hasReleaseNotes: !containsHyphen || isBeta,
+    hasReleaseNotes: true,
     isBeta,
   };
 }
 
-export let getVersionLinks = (): FooterLink[] => {
+export function getVersionLinks(hideEdition?: boolean): FooterLink[] {
   const { buildInfo, licenseInfo } = config;
   const links: FooterLink[] = [];
   const stateInfo = licenseInfo.stateInfo ? ` (${licenseInfo.stateInfo})` : '';
 
-  links.push({
-    target: '_blank',
-    id: 'version',
-    text: `${buildInfo.edition}${stateInfo}`,
-    url: licenseInfo.licenseUrl,
-  });
+  if (!hideEdition) {
+    links.push({
+      target: '_blank',
+      id: 'license',
+      text: `${buildInfo.edition}${stateInfo}`,
+      url: licenseInfo.licenseUrl,
+    });
+  }
 
   if (buildInfo.hideVersion) {
     return links;
   }
 
-  const { hasReleaseNotes, isBeta } = getVersionMeta(buildInfo.version);
-  const versionSlug = buildInfo.version.replace(/\./g, '-'); // replace all periods with hyphens
-  const docsVersion = isBeta ? 'next' : 'latest';
+  const { hasReleaseNotes } = getVersionMeta(buildInfo.version);
 
   links.push({
     target: '_blank',
     id: 'version',
-    text: `v${buildInfo.version} (${buildInfo.commit})`,
-    url: hasReleaseNotes
-      ? `https://grafana.com/docs/grafana/${docsVersion}/release-notes/release-notes-${versionSlug}/`
-      : undefined,
+    text: buildInfo.versionString,
+    url: hasReleaseNotes ? `https://github.com/grafana/grafana/blob/main/CHANGELOG.md` : undefined,
   });
 
   if (buildInfo.hasUpdate) {
@@ -88,30 +87,28 @@ export let getVersionLinks = (): FooterLink[] => {
   }
 
   return links;
-};
+}
 
 export function setFooterLinksFn(fn: typeof getFooterLinks) {
   getFooterLinks = fn;
 }
 
-export function setVersionLinkFn(fn: typeof getFooterLinks) {
-  getVersionLinks = fn;
-}
-
 export interface Props {
   /** Link overrides to show specific links in the UI */
   customLinks?: FooterLink[] | null;
+  hideEdition?: boolean;
 }
 
-export const Footer = React.memo(({ customLinks }: Props) => {
-  const links = (customLinks || getFooterLinks()).concat(getVersionLinks());
+export const Footer = memo(({ customLinks, hideEdition }: Props) => {
+  const links = (customLinks || getFooterLinks()).concat(getVersionLinks(hideEdition));
+  const styles = useStyles2(getStyles);
 
   return (
-    <footer className="footer">
+    <footer className={styles.footer}>
       <div className="text-center">
-        <ul>
-          {links.map((link) => (
-            <li key={link.text}>
+        <ul className={styles.list}>
+          {links.map((link, index) => (
+            <li className={styles.listItem} key={index}>
               <FooterItem item={link} />
             </li>
           ))}
@@ -138,3 +135,37 @@ function FooterItem({ item }: { item: FooterLink }) {
     </>
   );
 }
+
+const getStyles = (theme: GrafanaTheme2) => ({
+  footer: css({
+    ...theme.typography.bodySmall,
+    color: theme.colors.text.primary,
+    display: 'block',
+    padding: theme.spacing(2, 0),
+    position: 'relative',
+    width: '98%',
+
+    'a:hover': {
+      color: theme.colors.text.maxContrast,
+      textDecoration: 'underline',
+    },
+
+    [theme.breakpoints.down('md')]: {
+      display: 'none',
+    },
+  }),
+  list: css({
+    listStyle: 'none',
+  }),
+  listItem: css({
+    display: 'inline-block',
+    '&:after': {
+      content: "' | '",
+      padding: theme.spacing(0, 1),
+    },
+    '&:last-child:after': {
+      content: "''",
+      paddingLeft: 0,
+    },
+  }),
+});

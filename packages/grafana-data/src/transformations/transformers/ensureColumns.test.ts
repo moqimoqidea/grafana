@@ -42,7 +42,10 @@ describe('ensureColumns transformer', () => {
       options: {},
     };
 
-    const data = [seriesA, seriesBC];
+    const data = [
+      { refId: 'A', ...seriesA },
+      { refId: 'B', ...seriesBC },
+    ];
 
     await expect(transformDataFrame([cfg], data)).toEmitValuesWith((received) => {
       const filtered = received[0];
@@ -51,69 +54,65 @@ describe('ensureColumns transformer', () => {
       const frame = filtered[0];
       expect(frame.fields.length).toEqual(5);
       expect(filtered[0]).toMatchInlineSnapshot(`
-        Object {
-          "fields": Array [
-            Object {
-              "config": Object {},
+        {
+          "fields": [
+            {
+              "config": {},
               "name": "TheTime",
-              "state": Object {},
+              "state": {},
               "type": "time",
-              "values": Array [
+              "values": [
                 1000,
                 2000,
               ],
             },
-            Object {
-              "config": Object {},
-              "labels": Object {},
+            {
+              "config": {},
+              "labels": {},
               "name": "A",
-              "state": Object {},
+              "state": {},
               "type": "number",
-              "values": Array [
+              "values": [
                 1,
                 100,
               ],
             },
-            Object {
-              "config": Object {},
-              "labels": Object {},
+            {
+              "config": {},
+              "labels": {},
               "name": "B",
-              "state": Object {},
+              "state": {},
               "type": "number",
-              "values": Array [
+              "values": [
                 2,
                 200,
               ],
             },
-            Object {
-              "config": Object {},
-              "labels": Object {},
+            {
+              "config": {},
+              "labels": {},
               "name": "C",
-              "state": Object {},
+              "state": {},
               "type": "number",
-              "values": Array [
+              "values": [
                 3,
                 300,
               ],
             },
-            Object {
-              "config": Object {},
-              "labels": Object {},
+            {
+              "config": {},
+              "labels": {},
               "name": "D",
-              "state": Object {},
+              "state": {},
               "type": "string",
-              "values": Array [
+              "values": [
                 "first",
                 "second",
               ],
             },
           ],
           "length": 2,
-          "meta": Object {
-            "transformations": Array [
-              "ensureColumns",
-            ],
-          },
+          "refId": "joinByField-A-B",
         }
       `);
     });

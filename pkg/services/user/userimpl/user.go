@@ -2,75 +2,104 @@ package userimpl
 
 import (
 	"context"
-	"errors"
+	"encoding/json"
+	"fmt"
+	"strings"
 	"time"
 
-	"github.com/grafana/grafana/pkg/models"
-	"github.com/grafana/grafana/pkg/services/accesscontrol"
-	"github.com/grafana/grafana/pkg/services/dashboards"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
+
+	"github.com/grafana/grafana/pkg/infra/db"
+	"github.com/grafana/grafana/pkg/infra/localcache"
+	"github.com/grafana/grafana/pkg/infra/tracing"
+	ac "github.com/grafana/grafana/pkg/services/accesscontrol"
 	"github.com/grafana/grafana/pkg/services/org"
-	pref "github.com/grafana/grafana/pkg/services/preference"
 	"github.com/grafana/grafana/pkg/services/quota"
-	"github.com/grafana/grafana/pkg/services/sqlstore"
-	"github.com/grafana/grafana/pkg/services/sqlstore/db"
-	"github.com/grafana/grafana/pkg/services/star"
-	"github.com/grafana/grafana/pkg/services/teamguardian"
+	"github.com/grafana/grafana/pkg/services/serviceaccounts"
+	"github.com/grafana/grafana/pkg/services/supportbundles"
+	"github.com/grafana/grafana/pkg/services/team"
 	"github.com/grafana/grafana/pkg/services/user"
-	"github.com/grafana/grafana/pkg/services/userauth"
 	"github.com/grafana/grafana/pkg/setting"
 	"github.com/grafana/grafana/pkg/util"
-
-	"golang.org/x/sync/errgroup"
 )
 
 type Service struct {
-	store              store
-	orgService         org.Service
-	starService        star.Service
-	dashboardService   dashboards.DashboardService
-	preferenceService  pref.Service
-	teamMemberService  teamguardian.TeamGuardian
-	userAuthService    userauth.Service
-	quotaService       quota.Service
-	accessControlStore accesscontrol.Service
-	// TODO remove sqlstore
-	sqlStore *sqlstore.SQLStore
-
-	cfg *setting.Cfg
+	store        store
+	orgService   org.Service
+	teamService  team.Service
+	cacheService *localcache.CacheService
+	cfg          *setting.Cfg
+	tracer       tracing.Tracer
 }
 
 func ProvideService(
 	db db.DB,
 	orgService org.Service,
-	starService star.Service,
-	dashboardService dashboards.DashboardService,
-	preferenceService pref.Service,
-	teamMemberService teamguardian.TeamGuardian,
-	userAuthService userauth.Service,
-	quotaService quota.Service,
-	accessControlStore accesscontrol.Service,
 	cfg *setting.Cfg,
-	ss *sqlstore.SQLStore,
-) user.Service {
-	return &Service{
-		store: &sqlStore{
-			db:      db,
-			dialect: db.GetDialect(),
-		},
-		orgService:         orgService,
-		starService:        starService,
-		dashboardService:   dashboardService,
-		preferenceService:  preferenceService,
-		teamMemberService:  teamMemberService,
-		userAuthService:    userAuthService,
-		quotaService:       quotaService,
-		accessControlStore: accessControlStore,
-		cfg:                cfg,
-		sqlStore:           ss,
+	teamService team.Service,
+	cacheService *localcache.CacheService, tracer tracing.Tracer,
+	quotaService quota.Service, bundleRegistry supportbundles.Service,
+) (user.Service, error) {
+	store := ProvideStore(db, cfg)
+	s := &Service{
+		store:        &store,
+		orgService:   orgService,
+		cfg:          cfg,
+		teamService:  teamService,
+		cacheService: cacheService,
+		tracer:       tracer,
 	}
+
+	defaultLimits, err := readQuotaConfig(cfg)
+	if err != nil {
+		return s, err
+	}
+
+	if err := quotaService.RegisterQuotaReporter(&quota.NewUsageReporter{
+		TargetSrv:     quota.TargetSrv(user.QuotaTargetSrv),
+		DefaultLimits: defaultLimits,
+		Reporter:      s.usage,
+	}); err != nil {
+		return s, err
+	}
+
+	bundleRegistry.RegisterSupportItemCollector(s.supportBundleCollector())
+	return s, nil
+}
+
+func (s *Service) GetUsageStats(ctx context.Context) map[string]any {
+	stats := map[string]any{}
+	basicAuthStrongPasswordPolicyVal := 0
+	if s.cfg.BasicAuthStrongPasswordPolicy {
+		basicAuthStrongPasswordPolicyVal = 1
+	}
+
+	stats["stats.password_policy.count"] = basicAuthStrongPasswordPolicyVal
+
+	count, err := s.store.CountUserAccountsWithEmptyRole(ctx)
+	if err != nil {
+		return nil
+	}
+
+	stats["stats.user.role_none.count"] = count
+
+	return stats
 }
 
 func (s *Service) Create(ctx context.Context, cmd *user.CreateUserCommand) (*user.User, error) {
+	ctx, span := s.tracer.Start(ctx, "user.Create")
+	defer span.End()
+
+	if len(cmd.Login) == 0 {
+		cmd.Login = cmd.Email
+	}
+
+	// if login is still empty both email and login field is missing
+	if len(cmd.Login) == 0 {
+		return nil, user.ErrEmptyUsernameAndEmail.Errorf("user cannot be created with empty username and email")
+	}
+
 	cmdOrg := org.GetOrgIDForNewUserCommand{
 		Email:        cmd.Email,
 		Login:        cmd.Login,
@@ -79,36 +108,31 @@ func (s *Service) Create(ctx context.Context, cmd *user.CreateUserCommand) (*use
 		SkipOrgSetup: cmd.SkipOrgSetup,
 	}
 	orgID, err := s.orgService.GetIDForNewUser(ctx, cmdOrg)
-	cmd.OrgID = orgID
 	if err != nil {
 		return nil, err
 	}
-
 	if cmd.Email == "" {
 		cmd.Email = cmd.Login
 	}
-	usr := &user.User{
-		Login: cmd.Login,
-		Email: cmd.Email,
-	}
-	usr, err = s.store.Get(ctx, usr)
-	if err != nil && !errors.Is(err, user.ErrUserNotFound) {
-		return usr, err
+
+	if err := s.store.LoginConflict(ctx, cmd.Login, cmd.Email); err != nil {
+		return nil, user.ErrUserAlreadyExists
 	}
 
 	// create user
-	usr = &user.User{
-		Email:            cmd.Email,
+	usr := &user.User{
+		UID:              cmd.UID,
+		Email:            strings.ToLower(cmd.Email),
 		Name:             cmd.Name,
-		Login:            cmd.Login,
+		Login:            strings.ToLower(cmd.Login),
 		Company:          cmd.Company,
 		IsAdmin:          cmd.IsAdmin,
 		IsDisabled:       cmd.IsDisabled,
-		OrgID:            cmd.OrgID,
+		OrgID:            orgID,
 		EmailVerified:    cmd.EmailVerified,
-		Created:          time.Now(),
-		Updated:          time.Now(),
-		LastSeenAt:       time.Now().AddDate(-10, 0, 0),
+		Created:          timeNow(),
+		Updated:          timeNow(),
+		LastSeenAt:       timeNow().AddDate(-10, 0, 0),
 		IsServiceAccount: cmd.IsServiceAccount,
 	}
 
@@ -124,14 +148,17 @@ func (s *Service) Create(ctx context.Context, cmd *user.CreateUserCommand) (*use
 	usr.Rands = rands
 
 	if len(cmd.Password) > 0 {
-		encodedPassword, err := util.EncodePassword(cmd.Password, usr.Salt)
+		if err := cmd.Password.Validate(s.cfg); err != nil {
+			return nil, err
+		}
+
+		usr.Password, err = cmd.Password.Hash(usr.Salt)
 		if err != nil {
 			return nil, err
 		}
-		usr.Password = encodedPassword
 	}
 
-	userID, err := s.store.Insert(ctx, usr)
+	_, err = s.store.Insert(ctx, usr)
 	if err != nil {
 		return nil, err
 	}
@@ -146,295 +173,363 @@ func (s *Service) Create(ctx context.Context, cmd *user.CreateUserCommand) (*use
 			Updated: time.Now(),
 		}
 
-		if setting.AutoAssignOrg && !usr.IsAdmin {
+		if s.cfg.AutoAssignOrg && !usr.IsAdmin {
 			if len(cmd.DefaultOrgRole) > 0 {
 				orgUser.Role = org.RoleType(cmd.DefaultOrgRole)
 			} else {
-				orgUser.Role = org.RoleType(setting.AutoAssignOrgRole)
+				orgUser.Role = org.RoleType(s.cfg.AutoAssignOrgRole)
 			}
 		}
 		_, err = s.orgService.InsertOrgUser(ctx, &orgUser)
 		if err != nil {
-			err := s.store.Delete(ctx, userID)
+			err := s.store.Delete(ctx, usr.ID)
 			return usr, err
 		}
+	}
+	return usr, nil
+}
+
+func (s *Service) Delete(ctx context.Context, cmd *user.DeleteUserCommand) error {
+	ctx, span := s.tracer.Start(ctx, "user.Delete", trace.WithAttributes(
+		attribute.Int64("userID", cmd.UserID),
+	))
+	defer span.End()
+
+	_, err := s.store.GetByID(ctx, cmd.UserID)
+	if err != nil {
+		return err
+	}
+
+	return s.store.Delete(ctx, cmd.UserID)
+}
+
+func (s *Service) GetByID(ctx context.Context, query *user.GetUserByIDQuery) (*user.User, error) {
+	ctx, span := s.tracer.Start(ctx, "user.GetByID", trace.WithAttributes(
+		attribute.Int64("userID", query.ID),
+	))
+	defer span.End()
+
+	return s.store.GetByID(ctx, query.ID)
+}
+
+func (s *Service) GetByUID(ctx context.Context, query *user.GetUserByUIDQuery) (*user.User, error) {
+	ctx, span := s.tracer.Start(ctx, "user.GetByUID", trace.WithAttributes(
+		attribute.String("userUID", query.UID),
+	))
+	defer span.End()
+
+	return s.store.GetByUID(ctx, query.UID)
+}
+
+func (s *Service) GetByLogin(ctx context.Context, query *user.GetUserByLoginQuery) (*user.User, error) {
+	ctx, span := s.tracer.Start(ctx, "user.GetByLogin")
+	defer span.End()
+
+	return s.store.GetByLogin(ctx, query)
+}
+
+func (s *Service) GetByEmail(ctx context.Context, query *user.GetUserByEmailQuery) (*user.User, error) {
+	ctx, span := s.tracer.Start(ctx, "user.GetByEmail")
+	defer span.End()
+
+	return s.store.GetByEmail(ctx, query)
+}
+
+func (s *Service) Update(ctx context.Context, cmd *user.UpdateUserCommand) error {
+	ctx, span := s.tracer.Start(ctx, "user.Update", trace.WithAttributes(
+		attribute.Int64("userID", cmd.UserID),
+	))
+	defer span.End()
+
+	usr, err := s.store.GetByID(ctx, cmd.UserID)
+	if err != nil {
+		return err
+	}
+
+	if cmd.OldPassword != nil {
+		old, err := cmd.OldPassword.Hash(usr.Salt)
+		if err != nil {
+			return err
+		}
+
+		if old != usr.Password {
+			return user.ErrPasswordMissmatch.Errorf("old password does not match stored password")
+		}
+	}
+
+	if cmd.Password != nil {
+		if err := cmd.Password.Validate(s.cfg); err != nil {
+			return err
+		}
+
+		hashed, err := cmd.Password.Hash(usr.Salt)
+		if err != nil {
+			return err
+		}
+		cmd.Password = &hashed
+	}
+
+	if cmd.OrgID != nil {
+		orgs, err := s.orgService.GetUserOrgList(ctx, &org.GetUserOrgListQuery{UserID: cmd.UserID})
+		if err != nil {
+			return err
+		}
+
+		valid := false
+		for _, org := range orgs {
+			if org.OrgID == *cmd.OrgID {
+				valid = true
+			}
+		}
+
+		if !valid {
+			return fmt.Errorf("user does not belong to org")
+		}
+	}
+
+	return s.store.Update(ctx, cmd)
+}
+
+func (s *Service) UpdateLastSeenAt(ctx context.Context, cmd *user.UpdateUserLastSeenAtCommand) error {
+	ctx, span := s.tracer.Start(ctx, "user.UpdateLastSeen", trace.WithAttributes(
+		attribute.Int64("userID", cmd.UserID),
+	))
+	defer span.End()
+
+	u, err := s.GetSignedInUser(ctx, &user.GetSignedInUserQuery{
+		UserID: cmd.UserID,
+		OrgID:  cmd.OrgID,
+	})
+
+	if err != nil {
+		return err
+	}
+
+	if !s.shouldUpdateLastSeen(u.LastSeenAt) {
+		return user.ErrLastSeenUpToDate
+	}
+
+	return s.store.UpdateLastSeenAt(ctx, cmd)
+}
+
+func (s *Service) shouldUpdateLastSeen(t time.Time) bool {
+	return time.Since(t) > s.cfg.UserLastSeenUpdateInterval
+}
+
+func (s *Service) GetSignedInUser(ctx context.Context, query *user.GetSignedInUserQuery) (*user.SignedInUser, error) {
+	ctx, span := s.tracer.Start(ctx, "user.GetSignedInUser", trace.WithAttributes(
+		attribute.Int64("userID", query.UserID),
+		attribute.Int64("orgID", query.OrgID),
+	))
+	defer span.End()
+
+	var signedInUser *user.SignedInUser
+
+	// only check cache if we have a user ID and an org ID in query
+	if s.cacheService != nil {
+		if query.OrgID > 0 && query.UserID > 0 {
+			cacheKey := newSignedInUserCacheKey(query.OrgID, query.UserID)
+			if cached, found := s.cacheService.Get(cacheKey); found {
+				cachedUser := cached.(user.SignedInUser)
+				signedInUser = &cachedUser
+				return signedInUser, nil
+			}
+		}
+	}
+
+	result, err := s.getSignedInUser(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+
+	if s.cacheService != nil {
+		cacheKey := newSignedInUserCacheKey(result.OrgID, result.UserID)
+		s.cacheService.Set(cacheKey, *result, time.Second*5)
+	}
+
+	return result, nil
+}
+
+func newSignedInUserCacheKey(orgID, userID int64) string {
+	return fmt.Sprintf("signed-in-user-%d-%d", userID, orgID)
+}
+
+func (s *Service) getSignedInUser(ctx context.Context, query *user.GetSignedInUserQuery) (*user.SignedInUser, error) {
+	ctx, span := s.tracer.Start(ctx, "user.getSignedInUser", trace.WithAttributes(
+		attribute.Int64("userID", query.UserID),
+		attribute.Int64("orgID", query.OrgID),
+	))
+	defer span.End()
+
+	usr, err := s.store.GetSignedInUser(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+
+	usr.Teams, err = s.teamService.GetTeamIDsByUser(ctx, &team.GetTeamIDsByUserQuery{
+		OrgID:  usr.OrgID,
+		UserID: usr.UserID,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return usr, err
+}
+
+func (s *Service) Search(ctx context.Context, query *user.SearchUsersQuery) (*user.SearchUserQueryResult, error) {
+	ctx, span := s.tracer.Start(ctx, "user.Search", trace.WithAttributes(
+		attribute.Int64("orgID", query.OrgID),
+	))
+	defer span.End()
+
+	return s.store.Search(ctx, query)
+}
+
+func (s *Service) BatchDisableUsers(ctx context.Context, cmd *user.BatchDisableUsersCommand) error {
+	ctx, span := s.tracer.Start(ctx, "user.BatchDisableUsers", trace.WithAttributes(
+		attribute.Int64Slice("userIDs", cmd.UserIDs),
+	))
+	defer span.End()
+
+	return s.store.BatchDisableUsers(ctx, cmd)
+}
+
+func (s *Service) GetProfile(ctx context.Context, query *user.GetUserProfileQuery) (*user.UserProfileDTO, error) {
+	ctx, span := s.tracer.Start(ctx, "user.GetProfile", trace.WithAttributes(
+		attribute.Int64("userID", query.UserID),
+	))
+	defer span.End()
+
+	return s.store.GetProfile(ctx, query)
+}
+
+// CreateServiceAccount creates a service account in the user table and adds service account to an organisation in the org_user table
+func (s *Service) CreateServiceAccount(ctx context.Context, cmd *user.CreateUserCommand) (*user.User, error) {
+	ctx, span := s.tracer.Start(ctx, "user.CreateServiceAccount", trace.WithAttributes(
+		attribute.Int64("orgID", cmd.OrgID),
+	))
+	defer span.End()
+
+	cmd.Email = cmd.Login
+	err := s.store.LoginConflict(ctx, cmd.Login, cmd.Email)
+	if err != nil {
+		return nil, serviceaccounts.ErrServiceAccountAlreadyExists.Errorf("service account with login %s already exists", cmd.Login)
+	}
+
+	// create user
+	usr := &user.User{
+		Email:            cmd.Email,
+		Name:             cmd.Name,
+		Login:            cmd.Login,
+		IsDisabled:       cmd.IsDisabled,
+		OrgID:            cmd.OrgID,
+		Created:          time.Now(),
+		Updated:          time.Now(),
+		LastSeenAt:       time.Now().AddDate(-10, 0, 0),
+		IsServiceAccount: true,
+	}
+
+	salt, err := util.GetRandomString(10)
+	if err != nil {
+		return nil, err
+	}
+	usr.Salt = salt
+	rands, err := util.GetRandomString(10)
+	if err != nil {
+		return nil, err
+	}
+	usr.Rands = rands
+
+	_, err = s.store.Insert(ctx, usr)
+	if err != nil {
+		return nil, err
+	}
+
+	// create org user link
+	orgCmd := &org.AddOrgUserCommand{
+		OrgID:                     cmd.OrgID,
+		UserID:                    usr.ID,
+		Role:                      org.RoleType(cmd.DefaultOrgRole),
+		AllowAddingServiceAccount: true,
+	}
+	if err = s.orgService.AddOrgUser(ctx, orgCmd); err != nil {
+		return nil, err
 	}
 
 	return usr, nil
 }
 
-func (s *Service) Delete(ctx context.Context, cmd *user.DeleteUserCommand) error {
-	_, err := s.store.GetNotServiceAccount(ctx, cmd.UserID)
-	if err != nil {
-		return err
-	}
-	// delete from all the stores
-	if err := s.store.Delete(ctx, cmd.UserID); err != nil {
-		return err
-	}
-
-	g, ctx := errgroup.WithContext(ctx)
-	g.Go(func() error {
-		if err := s.starService.DeleteByUser(ctx, cmd.UserID); err != nil {
-			return err
+func (s *Service) supportBundleCollector() supportbundles.Collector {
+	collectorFn := func(ctx context.Context) (*supportbundles.SupportItem, error) {
+		query := &user.SearchUsersQuery{
+			SignedInUser: &user.SignedInUser{
+				Login:            "sa-supportbundle",
+				OrgRole:          "Admin",
+				IsGrafanaAdmin:   true,
+				IsServiceAccount: true,
+				Permissions:      map[int64]map[string][]string{ac.GlobalOrgID: {ac.ActionUsersRead: {ac.ScopeGlobalUsersAll}}},
+			},
+			OrgID:      0,
+			Query:      "",
+			Page:       0,
+			Limit:      0,
+			AuthModule: "",
+			Filters:    []user.Filter{},
+			IsDisabled: new(bool),
 		}
-		return nil
-	})
-	g.Go(func() error {
-		if err := s.orgService.DeleteUserFromAll(ctx, cmd.UserID); err != nil {
-			return err
-		}
-		return nil
-	})
-	g.Go(func() error {
-		if err := s.dashboardService.DeleteACLByUser(ctx, cmd.UserID); err != nil {
-			return err
-		}
-		return nil
-	})
-	g.Go(func() error {
-		if err := s.preferenceService.DeleteByUser(ctx, cmd.UserID); err != nil {
-			return err
-		}
-		return nil
-	})
-	g.Go(func() error {
-		if err := s.teamMemberService.DeleteByUser(ctx, cmd.UserID); err != nil {
-			return err
-		}
-		return nil
-	})
-	g.Go(func() error {
-		if err := s.userAuthService.Delete(ctx, cmd.UserID); err != nil {
-			return err
-		}
-		return nil
-	})
-	g.Go(func() error {
-		if err := s.userAuthService.DeleteToken(ctx, cmd.UserID); err != nil {
-			return err
-		}
-		return nil
-	})
-	g.Go(func() error {
-		if err := s.quotaService.DeleteByUser(ctx, cmd.UserID); err != nil {
-			return err
-		}
-		return nil
-	})
-	g.Go(func() error {
-		if err := s.accessControlStore.DeleteUserPermissions(ctx, accesscontrol.GlobalOrgID, cmd.UserID); err != nil {
-			return err
-		}
-		return nil
-	})
-	if err := g.Wait(); err != nil {
-		return err
-	}
-
-	return nil
-}
-
-func (s *Service) GetByID(ctx context.Context, query *user.GetUserByIDQuery) (*user.User, error) {
-	user, err := s.store.GetByID(ctx, query.ID)
-	if err != nil {
-		return nil, err
-	}
-	if s.cfg.CaseInsensitiveLogin {
-		if err := s.store.CaseInsensitiveLoginConflict(ctx, user.Login, user.Email); err != nil {
+		res, err := s.Search(ctx, query)
+		if err != nil {
 			return nil, err
 		}
+
+		userBytes, err := json.MarshalIndent(res.Users, "", " ")
+		if err != nil {
+			return nil, err
+		}
+
+		return &supportbundles.SupportItem{
+			Filename:  "users.json",
+			FileBytes: userBytes,
+		}, nil
 	}
-	return user, nil
+
+	return supportbundles.Collector{
+		UID:               "users",
+		DisplayName:       "User information",
+		Description:       "List users belonging to the Grafana instance",
+		IncludedByDefault: false,
+		Default:           false,
+		Fn:                collectorFn,
+	}
 }
 
-// TODO: remove wrapper around sqlstore
-func (s *Service) GetByLogin(ctx context.Context, query *user.GetUserByLoginQuery) (*user.User, error) {
-	q := models.GetUserByLoginQuery{LoginOrEmail: query.LoginOrEmail}
-	err := s.sqlStore.GetUserByLogin(ctx, &q)
+func (s *Service) usage(ctx context.Context, _ *quota.ScopeParameters) (*quota.Map, error) {
+	u := &quota.Map{}
+	if used, err := s.store.Count(ctx); err != nil {
+		return u, err
+	} else {
+		tag, err := quota.NewTag(quota.TargetSrv(user.QuotaTargetSrv), quota.Target(user.QuotaTarget), quota.GlobalScope)
+		if err != nil {
+			return u, err
+		}
+		u.Set(tag, used)
+	}
+	return u, nil
+}
+
+func readQuotaConfig(cfg *setting.Cfg) (*quota.Map, error) {
+	limits := &quota.Map{}
+
+	if cfg == nil {
+		return limits, nil
+	}
+
+	globalQuotaTag, err := quota.NewTag(quota.TargetSrv(user.QuotaTargetSrv), quota.Target(user.QuotaTarget), quota.GlobalScope)
 	if err != nil {
-		return nil, err
-	}
-	return q.Result, nil
-}
-
-// TODO: remove wrapper around sqlstore
-func (s *Service) GetByEmail(ctx context.Context, query *user.GetUserByEmailQuery) (*user.User, error) {
-	q := models.GetUserByEmailQuery{Email: query.Email}
-	err := s.sqlStore.GetUserByEmail(ctx, &q)
-	if err != nil {
-		return nil, err
-	}
-	return q.Result, nil
-}
-
-// TODO: remove wrapper around sqlstore
-func (s *Service) Update(ctx context.Context, cmd *user.UpdateUserCommand) error {
-	q := &models.UpdateUserCommand{
-		Name:   cmd.Name,
-		Email:  cmd.Email,
-		Login:  cmd.Login,
-		Theme:  cmd.Theme,
-		UserId: cmd.UserID,
-	}
-	return s.sqlStore.UpdateUser(ctx, q)
-}
-
-// TODO: remove wrapper around sqlstore
-func (s *Service) ChangePassword(ctx context.Context, cmd *user.ChangeUserPasswordCommand) error {
-	q := &models.ChangeUserPasswordCommand{
-		UserId:      cmd.UserID,
-		NewPassword: cmd.NewPassword,
-		OldPassword: cmd.OldPassword,
-	}
-	return s.sqlStore.ChangeUserPassword(ctx, q)
-}
-
-// TODO: remove wrapper around sqlstore
-func (s *Service) UpdateLastSeenAt(ctx context.Context, cmd *user.UpdateUserLastSeenAtCommand) error {
-	q := &models.UpdateUserLastSeenAtCommand{
-		UserId: cmd.UserID,
-	}
-	return s.sqlStore.UpdateUserLastSeenAt(ctx, q)
-}
-
-// TODO: remove wrapper around sqlstore
-func (s *Service) SetUsingOrg(ctx context.Context, cmd *user.SetUsingOrgCommand) error {
-	q := &models.SetUsingOrgCommand{
-		UserId: cmd.UserID,
-		OrgId:  cmd.OrgID,
-	}
-	return s.sqlStore.SetUsingOrg(ctx, q)
-}
-
-// TODO: remove wrapper around sqlstore
-func (s *Service) GetSignedInUserWithCacheCtx(ctx context.Context, query *user.GetSignedInUserQuery) (*user.SignedInUser, error) {
-	q := &models.GetSignedInUserQuery{
-		UserId: query.UserID,
-		Login:  query.Login,
-		Email:  query.Email,
-		OrgId:  query.OrgID,
-	}
-	err := s.sqlStore.GetSignedInUserWithCacheCtx(ctx, q)
-	if err != nil {
-		return nil, err
-	}
-	return q.Result, nil
-}
-
-// TODO: remove wrapper around sqlstore
-func (s *Service) GetSignedInUser(ctx context.Context, query *user.GetSignedInUserQuery) (*user.SignedInUser, error) {
-	q := &models.GetSignedInUserQuery{
-		UserId: query.UserID,
-		Login:  query.Login,
-		Email:  query.Email,
-		OrgId:  query.OrgID,
-	}
-	err := s.sqlStore.GetSignedInUser(ctx, q)
-	if err != nil {
-		return nil, err
-	}
-	return q.Result, nil
-}
-
-// TODO: remove wrapper around sqlstore
-func (s *Service) Search(ctx context.Context, query *user.SearchUsersQuery) (*user.SearchUserQueryResult, error) {
-	var usrSeschHitDTOs []*user.UserSearchHitDTO
-	q := &models.SearchUsersQuery{
-		SignedInUser: query.SignedInUser,
-		Query:        query.Query,
-		OrgId:        query.OrgID,
-		Page:         query.Page,
-		Limit:        query.Limit,
-		AuthModule:   query.AuthModule,
-		Filters:      query.Filters,
-		IsDisabled:   query.IsDisabled,
-	}
-	err := s.sqlStore.SearchUsers(ctx, q)
-	if err != nil {
-		return nil, err
-	}
-	for _, usrSearch := range q.Result.Users {
-		usrSeschHitDTOs = append(usrSeschHitDTOs, &user.UserSearchHitDTO{
-			ID:            usrSearch.Id,
-			Login:         usrSearch.Login,
-			Email:         usrSearch.Email,
-			Name:          usrSearch.Name,
-			AvatarUrl:     usrSearch.AvatarUrl,
-			IsDisabled:    usrSearch.IsDisabled,
-			IsAdmin:       usrSearch.IsAdmin,
-			LastSeenAt:    usrSearch.LastSeenAt,
-			LastSeenAtAge: usrSearch.LastSeenAtAge,
-			AuthLabels:    usrSearch.AuthLabels,
-			AuthModule:    user.AuthModuleConversion(usrSearch.AuthModule),
-		})
+		return limits, err
 	}
 
-	res := &user.SearchUserQueryResult{
-		Users:      usrSeschHitDTOs,
-		TotalCount: q.Result.TotalCount,
-		Page:       q.Result.Page,
-		PerPage:    q.Result.PerPage,
-	}
-	return res, nil
-}
-
-// TODO: remove wrapper around sqlstore
-func (s *Service) Disable(ctx context.Context, cmd *user.DisableUserCommand) error {
-	q := &models.DisableUserCommand{
-		UserId:     cmd.UserID,
-		IsDisabled: cmd.IsDisabled,
-	}
-	return s.sqlStore.DisableUser(ctx, q)
-}
-
-// TODO: remove wrapper around sqlstore
-func (s *Service) BatchDisableUsers(ctx context.Context, cmd *user.BatchDisableUsersCommand) error {
-	c := &models.BatchDisableUsersCommand{
-		UserIds:    cmd.UserIDs,
-		IsDisabled: cmd.IsDisabled,
-	}
-	return s.sqlStore.BatchDisableUsers(ctx, c)
-}
-
-// TODO: remove wrapper around sqlstore
-func (s *Service) UpdatePermissions(userID int64, isAdmin bool) error {
-	return s.sqlStore.UpdateUserPermissions(userID, isAdmin)
-}
-
-// TODO: remove wrapper around sqlstore
-func (s *Service) SetUserHelpFlag(ctx context.Context, cmd *user.SetUserHelpFlagCommand) error {
-	c := &models.SetUserHelpFlagCommand{
-		UserId:     cmd.UserID,
-		HelpFlags1: cmd.HelpFlags1,
-	}
-	return s.sqlStore.SetUserHelpFlag(ctx, c)
-}
-
-// TODO: remove wrapper around sqlstore
-func (s *Service) GetUserProfile(ctx context.Context, query *user.GetUserProfileQuery) (user.UserProfileDTO, error) {
-	q := &models.GetUserProfileQuery{
-		UserId: query.UserID,
-	}
-	err := s.sqlStore.GetUserProfile(ctx, q)
-	if err != nil {
-		return user.UserProfileDTO{}, err
-	}
-	result := user.UserProfileDTO{
-		ID:             q.Result.Id,
-		Email:          q.Result.Email,
-		Name:           q.Result.Name,
-		Login:          q.Result.Login,
-		Theme:          q.Result.Theme,
-		OrgID:          q.Result.OrgId,
-		IsGrafanaAdmin: q.Result.IsGrafanaAdmin,
-		IsDisabled:     q.Result.IsDisabled,
-		IsExternal:     q.Result.IsExternal,
-		AuthLabels:     q.Result.AuthLabels,
-		UpdatedAt:      q.Result.UpdatedAt,
-		CreatedAt:      q.Result.CreatedAt,
-		AvatarUrl:      q.Result.AvatarUrl,
-		AccessControl:  q.Result.AccessControl,
-	}
-	return result, nil
+	limits.Set(globalQuotaTag, cfg.Quota.Global.User)
+	return limits, nil
 }

@@ -1,12 +1,14 @@
 import { css, cx } from '@emotion/css';
 import { uniqueId } from 'lodash';
-import React, { FC, ReactNode, useRef, useState } from 'react';
+import { ReactNode, useRef, useState } from 'react';
+import * as React from 'react';
 
 import { GrafanaTheme2 } from '@grafana/data';
 
-import { Icon, Spinner } from '..';
 import { useStyles2 } from '../../themes';
 import { getFocusStyles } from '../../themes/mixins';
+import { Icon } from '../Icon/Icon';
+import { Spinner } from '../Spinner/Spinner';
 
 export interface Props {
   label: ReactNode;
@@ -18,9 +20,11 @@ export interface Props {
   contentClassName?: string;
   loading?: boolean;
   labelId?: string;
+  headerDataTestId?: string;
+  contentDataTestId?: string;
 }
 
-export const CollapsableSection: FC<Props> = ({
+export const CollapsableSection = ({
   label,
   isOpen,
   onToggle,
@@ -29,7 +33,9 @@ export const CollapsableSection: FC<Props> = ({
   children,
   labelId,
   loading = false,
-}) => {
+  headerDataTestId,
+  contentDataTestId,
+}: Props) => {
   const [open, toggleOpen] = useState<boolean>(isOpen);
   const styles = useStyles2(collapsableSectionStyles);
 
@@ -50,8 +56,12 @@ export const CollapsableSection: FC<Props> = ({
 
   return (
     <>
+      {/* disabling the a11y rules here as the button handles keyboard interactions */}
+      {/* this is just to provide a better experience for mouse users */}
+      {/* eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-static-element-interactions */}
       <div onClick={onClick} className={cx(styles.header, className)}>
         <button
+          type="button"
           id={`collapse-button-${id}`}
           className={styles.button}
           onClick={onClick}
@@ -65,12 +75,16 @@ export const CollapsableSection: FC<Props> = ({
             <Icon name={open ? 'angle-up' : 'angle-down'} className={styles.icon} />
           )}
         </button>
-        <div className={styles.label} id={`collapse-label-${id}`}>
+        <div className={styles.label} id={`collapse-label-${id}`} data-testid={headerDataTestId}>
           {label}
         </div>
       </div>
       {open && (
-        <div id={`collapse-content-${id}`} className={cx(styles.content, contentClassName)}>
+        <div
+          id={`collapse-content-${id}`}
+          className={cx(styles.content, contentClassName)}
+          data-testid={contentDataTestId}
+        >
           {children}
         </div>
       )}

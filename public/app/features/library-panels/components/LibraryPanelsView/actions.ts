@@ -14,11 +14,13 @@ interface SearchArgs {
   searchString: string;
   sortDirection?: string;
   panelFilter?: string[];
-  folderFilter?: string[];
+  folderFilterUIDs?: string[];
   currentPanelId?: string;
 }
 
 export function searchForLibraryPanels(args: SearchArgs): DispatchResult {
+  // Functions to support filtering out library panels per plugin type that have skipDataQuery set to true
+
   return function (dispatch) {
     const subscription = new Subscription();
     const dataObservable = from(
@@ -29,9 +31,14 @@ export function searchForLibraryPanels(args: SearchArgs): DispatchResult {
         excludeUid: args.currentPanelId,
         sortDirection: args.sortDirection,
         typeFilter: args.panelFilter,
-        folderFilter: args.folderFilter,
+        folderFilterUIDs: args.folderFilterUIDs,
       })
     ).pipe(
+      //filter out library panels per plugin type that have skipDataQuery set to true
+      mergeMap((libraryPanelsResult) => {
+        const { elements: libraryPanels } = libraryPanelsResult;
+        return of({ ...libraryPanelsResult, elements: libraryPanels });
+      }),
       mergeMap(({ perPage, elements: libraryPanels, page, totalCount }) =>
         of(searchCompleted({ libraryPanels, page, perPage, totalCount }))
       ),
@@ -64,7 +71,7 @@ export function deleteLibraryPanel(uid: string, args: SearchArgs): DispatchResul
 }
 
 export function asyncDispatcher(dispatch: Dispatch<AnyAction>) {
-  return function (action: any) {
+  return function (action: AnyAction | DispatchResult) {
     if (action instanceof Function) {
       return action(dispatch);
     }

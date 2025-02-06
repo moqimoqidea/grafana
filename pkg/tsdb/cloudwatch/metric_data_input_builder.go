@@ -1,22 +1,24 @@
 package cloudwatch
 
 import (
+	"context"
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/cloudwatch"
-	"github.com/grafana/grafana/pkg/services/featuremgmt"
+
+	"github.com/grafana/grafana/pkg/tsdb/cloudwatch/models"
 )
 
-func (e *cloudWatchExecutor) buildMetricDataInput(startTime time.Time, endTime time.Time,
-	queries []*cloudWatchQuery) (*cloudwatch.GetMetricDataInput, error) {
+func (e *cloudWatchExecutor) buildMetricDataInput(ctx context.Context, startTime time.Time, endTime time.Time,
+	queries []*models.CloudWatchQuery) (*cloudwatch.GetMetricDataInput, error) {
 	metricDataInput := &cloudwatch.GetMetricDataInput{
 		StartTime: aws.Time(startTime),
 		EndTime:   aws.Time(endTime),
 		ScanBy:    aws.String("TimestampAscending"),
 	}
 
-	shouldSetLabelOptions := e.features.IsEnabled(featuremgmt.FlagCloudWatchDynamicLabels) && len(queries) > 0 && len(queries[0].TimezoneUTCOffset) > 0
+	shouldSetLabelOptions := len(queries) > 0 && len(queries[0].TimezoneUTCOffset) > 0
 
 	if shouldSetLabelOptions {
 		metricDataInput.LabelOptions = &cloudwatch.LabelOptions{
@@ -25,9 +27,9 @@ func (e *cloudWatchExecutor) buildMetricDataInput(startTime time.Time, endTime t
 	}
 
 	for _, query := range queries {
-		metricDataQuery, err := e.buildMetricDataQuery(query)
+		metricDataQuery, err := e.buildMetricDataQuery(ctx, query)
 		if err != nil {
-			return nil, &queryError{err, query.RefId}
+			return nil, &models.QueryError{Err: err, RefID: query.RefId}
 		}
 		metricDataInput.MetricDataQueries = append(metricDataInput.MetricDataQueries, metricDataQuery)
 	}

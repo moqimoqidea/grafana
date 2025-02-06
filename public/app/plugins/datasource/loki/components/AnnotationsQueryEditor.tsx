@@ -1,8 +1,9 @@
 // Libraries
-import React, { memo } from 'react';
+import { memo } from 'react';
 
 import { AnnotationQuery } from '@grafana/data';
-import { EditorField, EditorRow, Input } from '@grafana/ui';
+import { EditorField, EditorRow } from '@grafana/plugin-ui';
+import { Input, Stack } from '@grafana/ui';
 
 // Types
 import { getNormalizedLokiQuery } from '../queryUtils';
@@ -18,7 +19,7 @@ type Props = LokiQueryEditorProps & {
 };
 
 export const LokiAnnotationsQueryEditor = memo(function LokiAnnotationQueryEditor(props: Props) {
-  const { annotation, onAnnotationChange } = props;
+  const { annotation, onAnnotationChange, history } = props;
 
   // this should never happen, but we want to keep typescript happy
   if (annotation === undefined || onAnnotationChange === undefined) {
@@ -28,7 +29,7 @@ export const LokiAnnotationsQueryEditor = memo(function LokiAnnotationQueryEdito
   const onChangeQuery = (query: LokiQuery) => {
     // the current version of annotations only stores an optional boolean
     // field `instant` to handle the instant/range switch.
-    // we need to maintain compatiblity for now, so we do the same.
+    // we need to maintain compatibility for now, so we do the same.
     // we explicitly call `getNormalizedLokiQuery` to make sure `queryType`
     // is set up correctly.
     const instant = getNormalizedLokiQuery(query).queryType === LokiQueryType.Instant;
@@ -48,15 +49,14 @@ export const LokiAnnotationsQueryEditor = memo(function LokiAnnotationQueryEdito
     queryType: annotation.queryType,
   };
   return (
-    <>
-      <div className="gf-form-group">
+    <Stack gap={5} direction="column">
+      <Stack gap={0} direction="column">
         <LokiQueryField
           datasource={props.datasource}
           query={queryWithRefId}
           onChange={onChangeQuery}
           onRunQuery={() => {}}
-          onBlur={() => {}}
-          history={[]}
+          history={history}
           ExtraFieldElement={
             <LokiOptionFields
               lineLimitValue={queryWithRefId?.maxLines?.toString() || ''}
@@ -67,8 +67,7 @@ export const LokiAnnotationsQueryEditor = memo(function LokiAnnotationQueryEdito
             />
           }
         />
-      </div>
-
+      </Stack>
       <EditorRow>
         <EditorField
           label="Title"
@@ -120,6 +119,6 @@ export const LokiAnnotationsQueryEditor = memo(function LokiAnnotationQueryEdito
           />
         </EditorField>
       </EditorRow>
-    </>
+    </Stack>
   );
 });

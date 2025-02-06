@@ -1,23 +1,34 @@
-import { DataSourcePluginMeta, DataSourceSettings, locationUtil } from '@grafana/data';
 import {
+  DataSourcePluginMeta,
+  DataSourceSettings,
+  locationUtil,
+  TestDataSourceResponse,
+  DataSourceTestSucceeded,
+  DataSourceTestFailed,
+  DataSourceApi,
+} from '@grafana/data';
+import {
+  config,
+  DataSourceSrv,
   DataSourceWithBackend,
-  getDataSourceSrv,
   HealthCheckError,
   HealthCheckResultDetails,
   isFetchError,
   locationService,
 } from '@grafana/runtime';
 import { updateNavIndex } from 'app/core/actions';
-import { contextSrv } from 'app/core/core';
+import { appEvents, contextSrv } from 'app/core/core';
 import { getBackendSrv } from 'app/core/services/backend_srv';
+import { DatasourceAPIVersions } from 'app/features/apiserver/client';
+import { ROUTES as CONNECTIONS_ROUTES } from 'app/features/connections/constants';
 import { getDatasourceSrv } from 'app/features/plugins/datasource_srv';
 import { getPluginSettings } from 'app/features/plugins/pluginSettings';
 import { importDataSourcePlugin } from 'app/features/plugins/plugin_loader';
-import { DataSourcePluginCategory, ThunkDispatch, ThunkResult } from 'app/types';
+import { AccessControlAction, DataSourcePluginCategory, ThunkDispatch, ThunkResult } from 'app/types';
 
 import * as api from '../api';
 import { DATASOURCES_ROUTES } from '../constants';
-import { nameExits, findNewName } from '../utils';
+import { trackDataSourceCreated, trackDataSourceTested } from '../tracking';
 
 import { buildCategories } from './buildCategories';
 import { buildNavModel } from './navModel';
@@ -26,6 +37,7 @@ import {
   dataSourceMetaLoaded,
   dataSourcePluginsLoad,
   dataSourcePluginsLoaded,
+  dataSourcesLoad,
   dataSourcesLoaded,
   initDataSourceSettingsFailed,
   initDataSourceSettingsSucceeded,
@@ -49,9 +61,37 @@ export interface InitDataSourceSettingDependencies {
 }
 
 export interface TestDataSourceDependencies {
-  getDatasourceSrv: typeof getDataSourceSrv;
+  getDatasourceSrv: () => Pick<DataSourceSrv, 'get'>;
   getBackendSrv: typeof getBackendSrv;
 }
+
+type parseDataSourceSaveResponse = {
+  message?: string | undefined;
+  status?: string;
+  details?: HealthCheckResultDetails | { message?: string; verboseMessage?: string };
+};
+
+const parseHealthCheckError = (errorResponse: any): parseDataSourceSaveResponse => {
+  let message: string | undefined;
+  let details: HealthCheckResultDetails;
+
+  if (errorResponse.error && errorResponse.error instanceof HealthCheckError) {
+    message = errorResponse.error.message;
+    details = errorResponse.error.details;
+  } else if (isFetchError(errorResponse)) {
+    message = errorResponse.data.message ?? `HTTP error ${errorResponse.statusText}`;
+  } else if (errorResponse instanceof Error) {
+    message = errorResponse.message;
+  }
+
+  return { message, details };
+};
+
+const parseHealthCheckSuccess = (response: TestDataSourceResponse): parseDataSourceSaveResponse => {
+  const { details, message, status } = response;
+
+  return { status, message, details };
+};
 
 export const initDataSourceSettings = (
   uid: string,
@@ -86,8 +126,14 @@ export const initDataSourceSettings = (
   };
 };
 
+const getPluginVersion = (dsApi: DataSourceApi) => {
+  const isCorePlugin = (dsApi?.meta?.module || '').startsWith('core');
+  return isCorePlugin ? config?.buildInfo?.version : dsApi?.meta?.info?.version;
+};
+
 export const testDataSource = (
   dataSourceName: string,
+  editRoute = DATASOURCES_ROUTES.Edit,
   dependencies: TestDataSourceDependencies = {
     getDatasourceSrv,
     getBackendSrv,
@@ -95,6 +141,7 @@ export const testDataSource = (
 ): ThunkResult<void> => {
   return async (dispatch: ThunkDispatch, getState) => {
     const dsApi = await dependencies.getDatasourceSrv().get(dataSourceName);
+    const editLink = editRoute.replace(/:uid/gi, dataSourceName);
 
     if (!dsApi.testDatasource) {
       return;
@@ -106,28 +153,42 @@ export const testDataSource = (
       try {
         const result = await dsApi.testDatasource();
 
-        dispatch(testDataSourceSucceeded(result));
+        const parsedResult = parseHealthCheckSuccess({ ...result, details: { ...result.details } });
+        dispatch(testDataSourceSucceeded(parsedResult));
+
+        trackDataSourceTested({
+          grafana_version: config.buildInfo.version,
+          plugin_id: dsApi.type,
+          plugin_version: getPluginVersion(dsApi),
+          datasource_uid: dsApi.uid,
+          success: true,
+          path: editLink,
+        });
+        appEvents.publish(new DataSourceTestSucceeded());
       } catch (err) {
-        let message: string | undefined;
-        let details: HealthCheckResultDetails;
+        const formattedError = parseHealthCheckError(err);
 
-        if (err instanceof HealthCheckError) {
-          message = err.message;
-          details = err.details;
-        } else if (isFetchError(err)) {
-          message = err.data.message ?? `HTTP error ${err.statusText}`;
-        } else if (err instanceof Error) {
-          message = err.message;
-        }
-
-        dispatch(testDataSourceFailed({ message, details }));
+        dispatch(testDataSourceFailed({ ...formattedError }));
+        trackDataSourceTested({
+          grafana_version: config.buildInfo.version,
+          plugin_id: dsApi.type,
+          plugin_version: getPluginVersion(dsApi),
+          datasource_uid: dsApi.uid,
+          success: false,
+          path: editLink,
+        });
+        appEvents.publish(new DataSourceTestFailed());
       }
     });
   };
 };
 
-export function loadDataSources(): ThunkResult<void> {
+export function loadDataSources(): ThunkResult<Promise<void>> {
   return async (dispatch) => {
+    if (!contextSrv.hasPermission(AccessControlAction.DataSourcesRead)) {
+      return;
+    }
+    dispatch(dataSourcesLoad());
     const response = await api.getDataSources();
     dispatch(dataSourcesLoaded(response));
   };
@@ -160,7 +221,7 @@ export function loadDataSource(uid: string): ThunkResult<Promise<DataSourceSetti
 
 export function loadDataSourceMeta(dataSource: DataSourceSettings): ThunkResult<void> {
   return async (dispatch) => {
-    const pluginInfo = (await getPluginSettings(dataSource.type)) as DataSourcePluginMeta;
+    const pluginInfo: DataSourcePluginMeta = await getPluginSettings(dataSource.type);
     const plugin = await importDataSourcePlugin(pluginInfo);
     const isBackend = plugin.DataSourceClass.prototype instanceof DataSourceWithBackend;
     const meta = {
@@ -175,29 +236,31 @@ export function loadDataSourceMeta(dataSource: DataSourceSettings): ThunkResult<
   };
 }
 
-export function addDataSource(plugin: DataSourcePluginMeta, editLink = DATASOURCES_ROUTES.Edit): ThunkResult<void> {
-  return async (dispatch, getStore) => {
-    await dispatch(loadDataSources());
-
-    const dataSources = getStore().dataSources.dataSources;
-    const isFirstDataSource = dataSources.length === 0;
+export function addDataSource(
+  plugin: DataSourcePluginMeta,
+  editRoute = DATASOURCES_ROUTES.Edit
+): ThunkResult<Promise<void>> {
+  return async () => {
     const newInstance = {
-      name: plugin.name,
       type: plugin.id,
       access: 'proxy',
-      isDefault: isFirstDataSource,
     };
 
-    if (nameExits(dataSources, newInstance.name)) {
-      newInstance.name = findNewName(dataSources, newInstance.name);
-    }
-
     const result = await api.createDataSource(newInstance);
+    const editLink = editRoute.replace(/:uid/gi, result.datasource.uid);
 
     await getDatasourceSrv().reload();
     await contextSrv.fetchUserPermissions();
 
-    locationService.push(editLink.replace(/:uid/gi, result.datasource.uid));
+    trackDataSourceCreated({
+      grafana_version: config.buildInfo.version,
+      plugin_id: plugin.id,
+      datasource_uid: result.datasource.uid,
+      plugin_version: result.meta?.info?.version,
+      path: location.pathname,
+    });
+
+    locationService.push(editLink);
   };
 }
 
@@ -210,10 +273,29 @@ export function loadDataSourcePlugins(): ThunkResult<void> {
   };
 }
 
-export function updateDataSource(dataSource: DataSourceSettings): ThunkResult<void> {
-  return async (dispatch) => {
-    await api.updateDataSource(dataSource);
+const dsApiVersions = new DatasourceAPIVersions();
+
+export function updateDataSource(dataSource: DataSourceSettings) {
+  return async (
+    dispatch: (
+      dataSourceSettings: ThunkResult<Promise<DataSourceSettings>> | { payload: unknown; type: string }
+    ) => DataSourceSettings
+  ) => {
+    try {
+      if (config.featureToggles.grafanaAPIServerWithExperimentalAPIs) {
+        dataSource.apiVersion = await dsApiVersions.get(dataSource.type);
+      }
+      await api.updateDataSource(dataSource);
+    } catch (err) {
+      const formattedError = parseHealthCheckError(err);
+
+      dispatch(testDataSourceFailed(formattedError));
+      const errorInfo = isFetchError(err) ? err.data : { message: 'An unexpected error occurred.', traceID: '' };
+      return Promise.reject(errorInfo);
+    }
+
     await getDatasourceSrv().reload();
+
     return dispatch(loadDataSource(dataSource.uid));
   };
 }
@@ -222,9 +304,16 @@ export function deleteLoadedDataSource(): ThunkResult<void> {
   return async (dispatch, getStore) => {
     const { uid } = getStore().dataSources.dataSource;
 
-    await api.deleteDataSource(uid);
-    await getDatasourceSrv().reload();
+    try {
+      await api.deleteDataSource(uid);
+      await getDatasourceSrv().reload();
 
-    locationService.push('/datasources');
+      const datasourcesUrl = CONNECTIONS_ROUTES.DataSources;
+
+      locationService.push(datasourcesUrl);
+    } catch (err) {
+      const formattedError = parseHealthCheckError(err);
+      dispatch(testDataSourceFailed(formattedError));
+    }
   };
 }

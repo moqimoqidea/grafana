@@ -1,11 +1,12 @@
 import { cloneDeep } from 'lodash';
 
+import { DataSourceVariableModel } from '@grafana/data';
+
 import { dispatch } from '../../../store/store';
 import { VariableAdapter } from '../adapters';
 import { ALL_VARIABLE_TEXT } from '../constants';
 import { optionPickerFactory } from '../pickers';
 import { setOptionAsCurrent, setOptionFromUrl } from '../state/actions';
-import { DataSourceVariableModel } from '../types';
 import { containsVariable, isAllVariable, toKeyedVariableIdentifier } from '../utils';
 
 import { DataSourceVariableEditor } from './DataSourceVariableEditor';
@@ -15,7 +16,7 @@ import { dataSourceVariableReducer, initialDataSourceVariableModelState } from '
 export const createDataSourceVariableAdapter = (): VariableAdapter<DataSourceVariableModel> => {
   return {
     id: 'datasource',
-    description: 'Enabled you to dynamically switch the data source for multiple panels.',
+    description: 'Enables you to dynamically switch the data source for multiple panels.',
     name: 'Data source',
     initialState: initialDataSourceVariableModelState,
     reducer: dataSourceVariableReducer,

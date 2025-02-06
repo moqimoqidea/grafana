@@ -3,25 +3,23 @@
  *
  * It includes auto-complete for template data and syntax highlighting
  */
-import { editor } from 'monaco-editor';
-import React, { FC } from 'react';
+import { IDisposable, editor } from 'monaco-editor';
+import { useEffect, useRef } from 'react';
 
 import { CodeEditor } from '@grafana/ui';
 import { CodeEditorProps } from '@grafana/ui/src/components/Monaco/types';
 
+import { registerGoTemplateAutocomplete } from './editor/autocomplete';
 import goTemplateLanguageDefinition, { GO_TEMPLATE_LANGUAGE_ID } from './editor/definition';
 import { registerLanguage } from './editor/register';
-
-const getSuggestions = () => {
-  return [];
-};
 
 type TemplateEditorProps = Omit<CodeEditorProps, 'language' | 'theme'> & {
   autoHeight?: boolean;
 };
 
-const TemplateEditor: FC<TemplateEditorProps> = (props) => {
+const TemplateEditor = (props: TemplateEditorProps) => {
   const shouldAutoHeight = Boolean(props.autoHeight);
+  const disposeSuggestions = useRef<IDisposable | null>(null);
 
   const onEditorDidMount = (editor: editor.IStandaloneCodeEditor) => {
     if (shouldAutoHeight) {
@@ -35,15 +33,24 @@ const TemplateEditor: FC<TemplateEditorProps> = (props) => {
     }
   };
 
+  useEffect(() => {
+    return () => {
+      disposeSuggestions.current?.dispose();
+    };
+  }, []);
+
   return (
     <CodeEditor
       showLineNumbers={true}
-      getSuggestions={getSuggestions}
       showMiniMap={false}
       {...props}
+      monacoOptions={{
+        scrollBeyondLastLine: false,
+      }}
       onEditorDidMount={onEditorDidMount}
       onBeforeEditorMount={(monaco) => {
         registerLanguage(monaco, goTemplateLanguageDefinition);
+        disposeSuggestions.current = registerGoTemplateAutocomplete(monaco);
       }}
       language={GO_TEMPLATE_LANGUAGE_ID}
     />

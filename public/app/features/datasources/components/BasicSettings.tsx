@@ -1,9 +1,8 @@
 import { css } from '@emotion/css';
-import React from 'react';
+import * as React from 'react';
 
 import { GrafanaTheme2 } from '@grafana/data';
 import { selectors } from '@grafana/e2e-selectors';
-import { getDataSourceSrv } from '@grafana/runtime';
 import { InlineField, InlineSwitch, Input, Badge, useStyles2 } from '@grafana/ui';
 
 export interface Props {
@@ -11,16 +10,12 @@ export interface Props {
   isDefault: boolean;
   onNameChange: (name: string) => void;
   onDefaultChange: (value: boolean) => void;
+  disabled?: boolean;
 }
 
-export function BasicSettings({ dataSourceName, isDefault, onDefaultChange, onNameChange }: Props) {
-  const ds = getDataSourceSrv()?.getInstanceSettings(dataSourceName);
-  const hasAlertingEnabled = Boolean(ds?.meta?.alerting ?? false);
-  const isAlertManagerDatasource = ds?.type === 'alertmanager';
-
+export function BasicSettings({ dataSourceName, isDefault, onDefaultChange, onNameChange, disabled }: Props) {
   return (
     <>
-      {<AlertingEnabled enabled={hasAlertingEnabled || isAlertManagerDatasource} />}
       <div className="gf-form-group" aria-label="Datasource settings page basic settings">
         <div className="gf-form-inline">
           {/* Name */}
@@ -30,6 +25,8 @@ export function BasicSettings({ dataSourceName, isDefault, onDefaultChange, onNa
               tooltip="The name is used when you select the data source in panels. The default data source is
               'preselected in new panels."
               grow
+              disabled={disabled}
+              labelWidth={14}
             >
               <Input
                 id="basic-settings-name"
@@ -38,13 +35,13 @@ export function BasicSettings({ dataSourceName, isDefault, onDefaultChange, onNa
                 placeholder="Name"
                 onChange={(event) => onNameChange(event.currentTarget.value)}
                 required
-                aria-label={selectors.pages.DataSource.name}
+                data-testid={selectors.pages.DataSource.name}
               />
             </InlineField>
           </div>
 
           {/* Is Default */}
-          <InlineField label="Default" labelWidth={8}>
+          <InlineField label="Default" labelWidth={8} disabled={disabled}>
             <InlineSwitch
               id="basic-settings-default"
               value={isDefault}
@@ -73,7 +70,7 @@ export function AlertingEnabled({ enabled }: { enabled: boolean }) {
 }
 
 const getStyles = (theme: GrafanaTheme2) => ({
-  badge: css`
-    margin-bottom: ${theme.spacing(2)};
-  `,
+  badge: css({
+    marginBottom: theme.spacing(2),
+  }),
 });
