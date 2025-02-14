@@ -1,18 +1,17 @@
-import { Story, Meta } from '@storybook/react';
-import React, { FC, useEffect, useState } from 'react';
+import { StoryFn, Meta } from '@storybook/react';
+import { FC, useEffect, useState } from 'react';
 
-import { DisplayValue, GrafanaTheme } from '@grafana/data';
+import { DisplayValue, GrafanaTheme2 } from '@grafana/data';
 import { LegendDisplayMode, LegendPlacement } from '@grafana/schema';
-import { useTheme, VizLegend } from '@grafana/ui';
 
-import { withCenteredStory } from '../../utils/storybook/withCenteredStory';
+import { useTheme2 } from '../../themes';
 
+import { VizLegend } from './VizLegend';
 import { VizLegendItem } from './types';
 
 const meta: Meta = {
   title: 'Visualizations/VizLegend',
   component: VizLegend,
-  decorators: [withCenteredStory],
   args: {
     containerWidth: '100%',
     seriesCount: 5,
@@ -43,7 +42,7 @@ interface LegendStoryDemoProps {
 }
 
 const LegendStoryDemo: FC<LegendStoryDemoProps> = ({ displayMode, seriesCount, name, placement, stats }) => {
-  const theme = useTheme();
+  const theme = useTheme2();
   const [items, setItems] = useState<VizLegendItem[]>(generateLegendItems(seriesCount, theme, stats));
 
   useEffect(() => {
@@ -76,7 +75,7 @@ const LegendStoryDemo: FC<LegendStoryDemoProps> = ({ displayMode, seriesCount, n
   );
 };
 
-export const WithNoValues: Story = ({ containerWidth, seriesCount }) => {
+export const WithNoValues: StoryFn = ({ containerWidth, seriesCount }) => {
   return (
     <div style={{ width: containerWidth }}>
       <LegendStoryDemo
@@ -101,7 +100,7 @@ export const WithNoValues: Story = ({ containerWidth, seriesCount }) => {
   );
 };
 
-export const WithValues: Story = ({ containerWidth, seriesCount }) => {
+export const WithValues: StoryFn = ({ containerWidth, seriesCount }) => {
   const stats: DisplayValue[] = [
     {
       title: 'Min',
@@ -149,7 +148,7 @@ export const WithValues: Story = ({ containerWidth, seriesCount }) => {
 
 function generateLegendItems(
   numberOfSeries: number,
-  theme: GrafanaTheme,
+  theme: GrafanaTheme2,
   statsToDisplay?: DisplayValue[]
 ): VizLegendItem[] {
   const alphabet = 'abcdefghijklmnopqrstuvwxyz'.split('');

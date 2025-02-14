@@ -2,36 +2,47 @@ import { cloneDeep, find, isEmpty } from 'lodash';
 import { merge, Observable, of } from 'rxjs';
 
 import {
-  DataFrame,
+  CoreApp,
   DataQueryRequest,
   DataQueryResponse,
   DataSourceInstanceSettings,
   DataSourceWithLogsContextSupport,
   LoadingState,
+  LogRowContextOptions,
   LogRowModel,
   ScopedVars,
 } from '@grafana/data';
-import { DataSourceWithBackend } from '@grafana/runtime';
-import { getTimeSrv, TimeSrv } from 'app/features/dashboard/services/TimeSrv';
-import { getTemplateSrv, TemplateSrv } from 'app/features/templating/template_srv';
-
-import { RowContextOptions } from '../../../features/logs/components/LogRowContextProvider';
+import { DataSourceWithBackend, TemplateSrv, getTemplateSrv } from '@grafana/runtime';
 
 import { CloudWatchAnnotationSupport } from './annotationSupport';
-import { SQLCompletionItemProvider } from './cloudwatch-sql/completion/CompletionItemProvider';
+import { DEFAULT_METRICS_QUERY, getDefaultLogsQuery } from './defaultQueries';
 import { isCloudWatchAnnotationQuery, isCloudWatchLogsQuery, isCloudWatchMetricsQuery } from './guards';
-import { CloudWatchLanguageProvider } from './language_provider';
-import { MetricMathCompletionItemProvider } from './metric-math/completion/CompletionItemProvider';
+import { CloudWatchLogsLanguageProvider } from './language/cloudwatch-logs/CloudWatchLogsLanguageProvider';
+import {
+  LogsSQLCompletionItemProvider,
+  LogsSQLCompletionItemProviderFunc,
+} from './language/cloudwatch-logs-sql/completion/CompletionItemProvider';
+import {
+  PPLCompletionItemProvider,
+  PPLCompletionItemProviderFunc,
+} from './language/cloudwatch-ppl/completion/PPLCompletionItemProvider';
+import { SQLCompletionItemProvider } from './language/cloudwatch-sql/completion/CompletionItemProvider';
+import {
+  LogsCompletionItemProvider,
+  LogsCompletionItemProviderFunc,
+  queryContext,
+} from './language/logs/completion/CompletionItemProvider';
+import { MetricMathCompletionItemProvider } from './language/metric-math/completion/CompletionItemProvider';
 import { CloudWatchAnnotationQueryRunner } from './query-runner/CloudWatchAnnotationQueryRunner';
 import { CloudWatchLogsQueryRunner } from './query-runner/CloudWatchLogsQueryRunner';
 import { CloudWatchMetricsQueryRunner } from './query-runner/CloudWatchMetricsQueryRunner';
+import { ResourcesAPI } from './resources/ResourcesAPI';
 import {
   CloudWatchAnnotationQuery,
   CloudWatchJsonData,
   CloudWatchLogsQuery,
   CloudWatchMetricsQuery,
   CloudWatchQuery,
-  Dimensions,
 } from './types';
 import { CloudWatchVariableSupport } from './variables';
 
@@ -39,59 +50,87 @@ export class CloudWatchDatasource
   extends DataSourceWithBackend<CloudWatchQuery, CloudWatchJsonData>
   implements DataSourceWithLogsContextSupport<CloudWatchLogsQuery>
 {
-  defaultRegion: any;
-  languageProvider: CloudWatchLanguageProvider;
+  defaultRegion?: string;
+  languageProvider: CloudWatchLogsLanguageProvider;
   sqlCompletionItemProvider: SQLCompletionItemProvider;
   metricMathCompletionItemProvider: MetricMathCompletionItemProvider;
+  defaultLogGroups?: string[];
+  logsSqlCompletionItemProviderFunc: (queryContext: queryContext) => LogsSQLCompletionItemProvider;
+  logsCompletionItemProviderFunc: (queryContext: queryContext) => LogsCompletionItemProvider;
+  pplCompletionItemProviderFunc: (queryContext: queryContext) => PPLCompletionItemProvider;
 
   type = 'cloudwatch';
-  standardStatistics = ['Average', 'Maximum', 'Minimum', 'Sum', 'SampleCount'];
 
   private metricsQueryRunner: CloudWatchMetricsQueryRunner;
   private annotationQueryRunner: CloudWatchAnnotationQueryRunner;
-  // this member should be private too, but we need to fix https://github.com/grafana/grafana/issues/55243 to enable that
   logsQueryRunner: CloudWatchLogsQueryRunner;
+  resources: ResourcesAPI;
 
   constructor(
-    instanceSettings: DataSourceInstanceSettings<CloudWatchJsonData>,
-    private readonly templateSrv: TemplateSrv = getTemplateSrv(),
-    timeSrv: TimeSrv = getTimeSrv()
+    private instanceSettings: DataSourceInstanceSettings<CloudWatchJsonData>,
+    readonly templateSrv: TemplateSrv = getTemplateSrv()
   ) {
     super(instanceSettings);
     this.defaultRegion = instanceSettings.jsonData.defaultRegion;
-    this.languageProvider = new CloudWatchLanguageProvider(this);
-    this.sqlCompletionItemProvider = new SQLCompletionItemProvider(this, this.templateSrv);
-    this.metricMathCompletionItemProvider = new MetricMathCompletionItemProvider(this, this.templateSrv);
-    this.variables = new CloudWatchVariableSupport(this);
-    this.annotations = CloudWatchAnnotationSupport;
+    this.resources = new ResourcesAPI(instanceSettings, templateSrv);
+    this.languageProvider = new CloudWatchLogsLanguageProvider(this);
+    this.sqlCompletionItemProvider = new SQLCompletionItemProvider(this.resources, this.templateSrv);
     this.metricsQueryRunner = new CloudWatchMetricsQueryRunner(instanceSettings, templateSrv);
-    this.logsQueryRunner = new CloudWatchLogsQueryRunner(instanceSettings, templateSrv, timeSrv);
+    this.logsQueryRunner = new CloudWatchLogsQueryRunner(instanceSettings, templateSrv);
     this.annotationQueryRunner = new CloudWatchAnnotationQueryRunner(instanceSettings, templateSrv);
-  }
+    this.variables = new CloudWatchVariableSupport(this.resources);
+    this.annotations = CloudWatchAnnotationSupport;
+    this.defaultLogGroups = instanceSettings.jsonData.defaultLogGroups;
 
-  // datasource api
+    this.metricMathCompletionItemProvider = new MetricMathCompletionItemProvider(this.resources, this.templateSrv);
+    this.logsCompletionItemProviderFunc = LogsCompletionItemProviderFunc(this.resources, this.templateSrv);
+    this.logsSqlCompletionItemProviderFunc = LogsSQLCompletionItemProviderFunc(this.resources, templateSrv);
+    this.pplCompletionItemProviderFunc = PPLCompletionItemProviderFunc(this.resources, this.templateSrv);
+  }
 
   filterQuery(query: CloudWatchQuery) {
     return query.hide !== true || (isCloudWatchMetricsQuery(query) && query.id !== '');
   }
 
+  // reminder: when queries are made on the backend through alerting they will not go through this function
+  // we have duplicated code here to retry queries on the frontend so that the we can show partial results to users
+  // but ultimately anytime we add special error handling or logic retrying here we should ask ourselves
+  // could it only live in the backend? if so let's implement it there. If not, should it also live in the backend or just in the frontend?
+  // another note that at the end of the day all of these queries call super.query which is what forwards the request to the backend through /query
   query(options: DataQueryRequest<CloudWatchQuery>): Observable<DataQueryResponse> {
     options = cloneDeep(options);
 
     let queries = options.targets.filter(this.filterQuery);
-    const { logQueries, metricsQueries, annotationQueries } = getTargetsByQueryMode(queries);
+
+    const logQueries: CloudWatchLogsQuery[] = [];
+    const metricsQueries: CloudWatchMetricsQuery[] = [];
+    const annotationQueries: CloudWatchAnnotationQuery[] = [];
+
+    queries.forEach((query) => {
+      if (isCloudWatchAnnotationQuery(query)) {
+        annotationQueries.push(query);
+      } else if (isCloudWatchLogsQuery(query)) {
+        logQueries.push(query);
+      } else {
+        metricsQueries.push(query);
+      }
+    });
 
     const dataQueryResponses: Array<Observable<DataQueryResponse>> = [];
-    if (logQueries.length > 0) {
-      dataQueryResponses.push(this.logsQueryRunner.handleLogQueries(logQueries, options));
+    if (logQueries.length) {
+      dataQueryResponses.push(this.logsQueryRunner.handleLogQueries(logQueries, options, super.query.bind(this)));
     }
 
-    if (metricsQueries.length > 0) {
-      dataQueryResponses.push(this.metricsQueryRunner.handleMetricQueries(metricsQueries, options));
+    if (metricsQueries.length) {
+      dataQueryResponses.push(
+        this.metricsQueryRunner.handleMetricQueries(metricsQueries, options, super.query.bind(this))
+      );
     }
 
-    if (annotationQueries.length > 0) {
-      dataQueryResponses.push(this.annotationQueryRunner.handleAnnotationQuery(annotationQueries, options));
+    if (annotationQueries.length) {
+      dataQueryResponses.push(
+        this.annotationQueryRunner.handleAnnotationQuery(annotationQueries, options, super.query.bind(this))
+      );
     }
     // No valid targets, return the empty result to save a round trip.
     if (isEmpty(dataQueryResponses)) {
@@ -111,21 +150,22 @@ export class CloudWatchDatasource
 
     return queries.map((query) => ({
       ...query,
-      region: this.getActualRegion(
-        this.metricsQueryRunner.replaceVariableAndDisplayWarningIfMulti(query.region, scopedVars)
+      region: this.metricsQueryRunner.replaceVariableAndDisplayWarningIfMulti(
+        this.getActualRegion(query.region),
+        scopedVars
       ),
       ...(isCloudWatchMetricsQuery(query) &&
         this.metricsQueryRunner.interpolateMetricsQueryVariables(query, scopedVars)),
     }));
   }
 
-  getLogRowContext = async (
-    row: LogRowModel,
-    context?: RowContextOptions,
-    query?: CloudWatchLogsQuery
-  ): Promise<{ data: DataFrame[] }> => {
-    return this.logsQueryRunner.getLogRowContext(row, context, query);
-  };
+  /**
+   * Get log row context for a given log row. This is called when the user clicks on a log row in the logs visualization and the "show context button"
+   * it shows the surrounding logs.
+   */
+  getLogRowContext(row: LogRowModel, context?: LogRowContextOptions, query?: CloudWatchLogsQuery) {
+    return this.logsQueryRunner.getLogRowContext(row, context, super.query.bind(this), query);
+  }
 
   targetContainsTemplate(target: any) {
     return (
@@ -138,12 +178,8 @@ export class CloudWatchDatasource
     );
   }
 
-  showContextToggle() {
-    return true;
-  }
-
   getQueryDisplayText(query: CloudWatchQuery) {
-    if (query.queryMode === 'Logs') {
+    if (isCloudWatchLogsQuery(query)) {
       return query.expression ?? '';
     } else {
       return JSON.stringify(query);
@@ -152,137 +188,20 @@ export class CloudWatchDatasource
 
   // public
   getVariables() {
-    return this.templateSrv.getVariables().map((v) => `$${v.name}`);
-  }
-
-  getDefaultRegion() {
-    return this.defaultRegion;
+    return this.resources.getVariables();
   }
 
   getActualRegion(region?: string) {
     if (region === 'default' || region === undefined || region === '') {
-      return this.getDefaultRegion();
+      return this.defaultRegion ?? '';
     }
     return region;
   }
 
-  doMetricResourceRequest(subtype: string, parameters?: any): Promise<Array<{ text: any; label: any; value: any }>> {
-    return this.getResource(subtype, parameters);
+  getDefaultQuery(_: CoreApp): Partial<CloudWatchQuery> {
+    return {
+      ...getDefaultLogsQuery(this.instanceSettings.jsonData.logGroups, this.instanceSettings.jsonData.defaultLogGroups),
+      ...DEFAULT_METRICS_QUERY,
+    };
   }
-
-  // resource requests
-  getRegions(): Promise<Array<{ label: string; value: string; text: string }>> {
-    return this.doMetricResourceRequest('regions').then((regions: any) => [
-      { label: 'default', value: 'default', text: 'default' },
-      ...regions,
-    ]);
-  }
-
-  getNamespaces() {
-    return this.doMetricResourceRequest('namespaces');
-  }
-
-  async getMetrics(namespace: string | undefined, region?: string) {
-    if (!namespace) {
-      return [];
-    }
-
-    return this.doMetricResourceRequest('metrics', {
-      region: this.templateSrv.replace(this.getActualRegion(region)),
-      namespace: this.templateSrv.replace(namespace),
-    });
-  }
-
-  async getAllMetrics(region: string): Promise<Array<{ metricName: string; namespace: string }>> {
-    const values = await this.doMetricResourceRequest('all-metrics', {
-      region: this.templateSrv.replace(this.getActualRegion(region)),
-    });
-
-    return values.map((v) => ({ metricName: v.value, namespace: v.text }));
-  }
-
-  async getDimensionKeys(
-    namespace: string | undefined,
-    region: string,
-    dimensionFilters: Dimensions = {},
-    metricName = ''
-  ) {
-    if (!namespace) {
-      return [];
-    }
-
-    return this.doMetricResourceRequest('dimension-keys', {
-      region: this.templateSrv.replace(this.getActualRegion(region)),
-      namespace: this.templateSrv.replace(namespace),
-      dimensionFilters: JSON.stringify(this.metricsQueryRunner.convertDimensionFormat(dimensionFilters, {})),
-      metricName,
-    });
-  }
-
-  async getDimensionValues(
-    region: string,
-    namespace: string | undefined,
-    metricName: string | undefined,
-    dimensionKey: string,
-    filterDimensions: {}
-  ) {
-    if (!namespace || !metricName) {
-      return [];
-    }
-
-    const values = await this.doMetricResourceRequest('dimension-values', {
-      region: this.templateSrv.replace(this.getActualRegion(region)),
-      namespace: this.templateSrv.replace(namespace),
-      metricName: this.templateSrv.replace(metricName.trim()),
-      dimensionKey: this.templateSrv.replace(dimensionKey),
-      dimensions: JSON.stringify(this.metricsQueryRunner.convertDimensionFormat(filterDimensions, {})),
-    });
-
-    return values;
-  }
-
-  getEbsVolumeIds(region: string, instanceId: string) {
-    return this.doMetricResourceRequest('ebs-volume-ids', {
-      region: this.templateSrv.replace(this.getActualRegion(region)),
-      instanceId: this.templateSrv.replace(instanceId),
-    });
-  }
-
-  getEc2InstanceAttribute(region: string, attributeName: string, filters: any) {
-    return this.doMetricResourceRequest('ec2-instance-attribute', {
-      region: this.templateSrv.replace(this.getActualRegion(region)),
-      attributeName: this.templateSrv.replace(attributeName),
-      filters: JSON.stringify(this.metricsQueryRunner.convertMultiFilterFormat(filters, 'filter key')),
-    });
-  }
-
-  getResourceARNs(region: string, resourceType: string, tags: any) {
-    return this.doMetricResourceRequest('resource-arns', {
-      region: this.templateSrv.replace(this.getActualRegion(region)),
-      resourceType: this.templateSrv.replace(resourceType),
-      tags: JSON.stringify(this.metricsQueryRunner.convertMultiFilterFormat(tags, 'tag name')),
-    });
-  }
-}
-
-function getTargetsByQueryMode(targets: CloudWatchQuery[]) {
-  const logQueries: CloudWatchLogsQuery[] = [];
-  const metricsQueries: CloudWatchMetricsQuery[] = [];
-  const annotationQueries: CloudWatchAnnotationQuery[] = [];
-
-  targets.forEach((query) => {
-    if (isCloudWatchAnnotationQuery(query)) {
-      annotationQueries.push(query);
-    } else if (isCloudWatchLogsQuery(query)) {
-      logQueries.push(query);
-    } else {
-      metricsQueries.push(query);
-    }
-  });
-
-  return {
-    logQueries,
-    metricsQueries,
-    annotationQueries,
-  };
 }

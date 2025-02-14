@@ -1,13 +1,16 @@
 ---
 aliases:
-  - /docs/grafana/latest/enterprise/auditing/
-  - /docs/grafana/latest/setup-grafana/configure-security/audit-grafana/
+  - ../../enterprise/auditing/
 description: Auditing
 keywords:
   - grafana
   - auditing
   - audit
   - logs
+labels:
+  products:
+    - cloud
+    - enterprise
 title: Audit a Grafana instance
 weight: 800
 ---
@@ -16,7 +19,15 @@ weight: 800
 
 Auditing allows you to track important changes to your Grafana instance. By default, audit logs are logged to file but the auditing feature also supports sending logs directly to Loki.
 
-> **Note:** Available in [Grafana Enterprise]({{< relref "../../enterprise/" >}}) version 7.3 and later, and [Grafana Cloud Advanced]({{< ref "/docs/grafana-cloud" >}}).
+{{% admonition type="note" %}}
+To enable sending Grafana Cloud audit logs to your Grafana Cloud Logs instance, please [file a support ticket](/profile/org/tickets/new). Note that standard ingest and retention rates apply for ingesting these audit logs.
+{{% /admonition %}}
+
+Only API requests or UI actions that trigger an API request generate an audit log.
+
+{{% admonition type="note" %}}
+Available in [Grafana Enterprise]({{< relref "../../introduction/grafana-enterprise" >}}) and [Grafana Cloud](/docs/grafana-cloud).
+{{% /admonition %}}
 
 ## Audit logs
 
@@ -37,19 +48,19 @@ Audit logs contain the following fields. The fields followed by **\*** are alway
 | `user.orgId`\*          | number  | Current organization of the user that made the request.                                                                                                                                                                  |
 | `user.orgRole`          | string  | Current role of the user that made the request.                                                                                                                                                                          |
 | `user.name`             | string  | Name of the Grafana user that made the request.                                                                                                                                                                          |
-| `user.tokenId`          | number  | ID of the user authentication token.                                                                                                                                                                                     |
+| `user.authTokenId`      | number  | ID of the user authentication token.                                                                                                                                                                                     |
 | `user.apiKeyId`         | number  | ID of the Grafana API key used to make the request.                                                                                                                                                                      |
 | `user.isAnonymous`\*    | boolean | If an anonymous user made the request, `true`. Otherwise, `false`.                                                                                                                                                       |
 | `action`\*              | string  | The request action. For example, `create`, `update`, or `manage-permissions`.                                                                                                                                            |
 | `request`\*             | object  | Information about the HTTP request.                                                                                                                                                                                      |
 | `request.params`        | object  | Request’s path parameters.                                                                                                                                                                                               |
 | `request.query`         | object  | Request’s query parameters.                                                                                                                                                                                              |
-| `request.body`          | string  | Request’s body.                                                                                                                                                                                                          |
+| `request.body`          | string  | Request’s body. Filled with `<non-marshalable format>` when it isn't a valid JSON.                                                                                                                                       |
 | `result`\*              | object  | Information about the HTTP response.                                                                                                                                                                                     |
 | `result.statusType`     | string  | If the request action was successful, `success`. Otherwise, `failure`.                                                                                                                                                   |
 | `result.statusCode`     | number  | HTTP status of the request.                                                                                                                                                                                              |
 | `result.failureMessage` | string  | HTTP error message.                                                                                                                                                                                                      |
-| `result.body`           | string  | Response body.                                                                                                                                                                                                           |
+| `result.body`           | string  | Response body. Filled with `<non-marshalable format>` when it isn't a valid JSON.                                                                                                                                        |
 | `resources`             | array   | Information about the resources that the request action affected. This field can be null for non-resource actions such as `login` or `logout`.                                                                           |
 | `resources[x].id`\*     | number  | ID of the resource.                                                                                                                                                                                                      |
 | `resources[x].type`\*   | string  | The type of the resource that was logged: `alert`, `alert-notification`, `annotation`, `api-key`, `auth-token`, `dashboard`, `datasource`, `folder`, `org`, `panel`, `playlist`, `report`, `team`, `user`, or `version`. |
@@ -66,6 +77,7 @@ The `additionalData` field can contain the following information:
 | `extUserInfo` | `login` | User information provided by the external system that was used to log in. |
 | `authTokenCount` | `login` | Number of active authentication tokens for the user that logged in. |
 | `terminationReason` | `logout` | The reason why the user logged out, such as a manual logout or a token expiring. |
+| `billing_role` | `billing-information` | The billing role associated with the billing information being sent. |
 
 ### Recorded actions
 
@@ -116,6 +128,10 @@ For example, creating an API key produces an audit log like this:
 Some actions can only be distinguished by their `requestUri` fields. For those actions, the relevant
 pattern of the `requestUri` field is given.
 
+Note that almost all these recorded actions are actions that correspond to API requests or UI actions that
+trigger an API request. Therefore, the action `{"action": "email", "resources": [{"type": "report"}]}` corresponds
+to the action when the user requests a report's preview to be sent through email, and not the scheduled ones.
+
 #### Sessions
 
 | Action                           | Distinguishing fields                                                                      |
@@ -129,7 +145,47 @@ pattern of the `requestUri` field is given.
 
 \* Where `AUTH-MODULE` is the name of the authentication module: `grafana`, `saml`,
 `ldap`, etc. \
-\*\* Includes manual log out, token expired/revoked, and [SAML Single Logout]({{< relref "configure-authentication/saml/#single-logout" >}}).
+\*\* Includes manual log out, token expired/revoked, and [SAML Single Logout]({{< relref "./configure-authentication/saml#single-logout" >}}).
+
+#### Service accounts
+
+| Action                       | Distinguishing fields                                                                                 |
+| ---------------------------- | ----------------------------------------------------------------------------------------------------- |
+| Create service account       | `{"action": "create", "resources": [{"type": "service-account"}]}`                                    |
+| Update service account       | `{"action": "update", "resources": [{"type": "service-account"}]}`                                    |
+| Delete service account       | `{"action": "delete", "resources": [{"type": "service-account"}]}`                                    |
+| Create service account token | `{"action": "create", "resources": [{"type": "service-account"}, {"type": "service-account-token"}]}` |
+| Delete service account token | `{"action": "delete", "resources": [{"type": "service-account"}, {"type": "service-account-token"}]}` |
+| Hide API keys                | `{"action": "hide-api-keys"}`                                                                         |
+| Migrate API keys             | `{"action": "migrate-api-keys"}`                                                                      |
+| Migrate API key              | `{"action": "migrate-api-keys"}, "resources": [{"type": "api-key"}]}`                                 |
+
+#### Access control
+
+| Action                                   | Distinguishing fields                                                                                                       |
+| ---------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| Create role                              | `{"action": "create", "resources": [{"type": "role"}]}`                                                                     |
+| Update role                              | `{"action": "update", "resources": [{"type": "role"}]}`                                                                     |
+| Delete role                              | `{"action": "delete", "resources": [{"type": "role"}]}`                                                                     |
+| Assign built-in role                     | `{"action": "assign-builtin-role", "resources": [{"type": "role"}, {"type": "builtin-role"}]}`                              |
+| Remove built-in role                     | `{"action": "remove-builtin-role", "resources": [{"type": "role"}, {"type": "builtin-role"}]}`                              |
+| Grant team role                          | `{"action": "grant-team-role", "resources": [{"type": "team"}]}`                                                            |
+| Set team roles                           | `{"action": "set-team-roles", "resources": [{"type": "team"}]}`                                                             |
+| Revoke team role                         | `{"action": "revoke-team-role", "resources": [{"type": "role"}, {"type": "team"}]}`                                         |
+| Grant user role                          | `{"action": "grant-user-role", "resources": [{"type": "role"}, {"type": "user"}]}`                                          |
+| Set user roles                           | `{"action": "set-user-roles", "resources": [{"type": "user"}]}`                                                             |
+| Revoke user role                         | `{"action": "revoke-user-role", "resources": [{"type": "role"}, {"type": "user"}]}`                                         |
+| Set user permissions on folder           | `{"action": "set-user-permissions-on-folder", "resources": [{"type": "folder"}, {"type": "user"}]}`                         |
+| Set team permissions on folder           | `{"action": "set-team-permissions-on-folder", "resources": [{"type": "folder"}, {"type": "team"}]}`                         |
+| Set basic role permissions on folder     | `{"action": "set-basic-role-permissions-on-folder", "resources": [{"type": "folder"}, {"type": "builtin-role"}]}`           |
+| Set user permissions on dashboard        | `{"action": "set-user-permissions-on-dashboards", "resources": [{"type": "dashboard"}, {"type": "user"}]}`                  |
+| Set team permissions on dashboard        | `{"action": "set-team-permissions-on-dashboards", "resources": [{"type": "dashboard"}, {"type": "team"}]}`                  |
+| Set basic role permissions on dashboard  | `{"action": "set-basic-role-permissions-on-dashboards", "resources": [{"type": "dashboard"}, {"type": "builtin-role"}]}`    |
+| Set user permissions on team             | `{"action": "set-user-permissions-on-teams", "resources": [{"type": "teams"}, {"type": "user"}]}`                           |
+| Set user permissions on service account  | `{"action": "set-user-permissions-on-service-accounts", "resources": [{"type": "service-account"}, {"type": "user"}]}`      |
+| Set user permissions on datasource       | `{"action": "set-user-permissions-on-data-sources", "resources": [{"type": "datasource"}, {"type": "user"}]}`               |
+| Set team permissions on datasource       | `{"action": "set-team-permissions-on-data-sources", "resources": [{"type": "datasource"}, {"type": "team"}]}`               |
+| Set basic role permissions on datasource | `{"action": "set-basic-role-permissions-on-data-sources", "resources": [{"type": "datasource"}, {"type": "builtin-role"}]}` |
 
 #### User management
 
@@ -213,40 +269,11 @@ external group.
 
 \* `resources` may also contain a third item with `"type":` set to `"user"` or `"team"`.
 
-#### Alerts and notification channels management
+#### Data source query
 
-| Action                                                                | Distinguishing fields                                                                          |
-| --------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
-| Save alert manager configuration                                      | `{"action": "update", "requestUri": "/api/alertmanager/RECIPIENT/config/api/v1/alerts"}`       |
-| Reset alert manager configuration                                     | `{"action": "delete", "requestUri": "/api/alertmanager/RECIPIENT/config/api/v1/alerts"}`       |
-| Create silence                                                        | `{"action": "create", "requestUri": "/api/alertmanager/RECIPIENT/api/v2/silences"}`            |
-| Delete silence                                                        | `{"action": "delete", "requestUri": "/api/alertmanager/RECIPIENT/api/v2/silences/SILENCE-ID"}` |
-| Create alert                                                          | `{"action": "create", "requestUri": "/api/ruler/RECIPIENT/api/v2/alerts"}`                     |
-| Create or update rule group                                           | `{"action": "create-update", "requestUri": "/api/ruler/RECIPIENT/api/v1/rules/NAMESPACE"}`     |
-| Delete rule group                                                     | `{"action": "delete", "requestUri": "/api/ruler/RECIPIENT/api/v1/rules/NAMESPACE/GROUP-NAME"}` |
-| Delete namespace                                                      | `{"action": "delete", "requestUri": "/api/ruler/RECIPIENT/api/v1/rules/NAMESPACE"}`            |
-| Test Grafana managed receivers                                        | `{"action": "test", "requestUri": "/api/alertmanager/RECIPIENT/config/api/v1/receivers/test"}` |
-| Create or update the NGalert configuration of the user's organization | `{"action": "create-update", "requestUri": "/api/v1/ngalert/admin_config"}`                    |
-| Delete the NGalert configuration of the user's organization           | `{"action": "delete", "requestUri": "/api/v1/ngalert/admin_config"}`                           |
-
-Where the following:
-
-- `RECIPIENT` is `grafana` for requests handled by Grafana or the data source UID for requests forwarded to a data source.
-- `NAMESPACE` is the string identifier for the rules namespace.
-- `GROUP-NAME` is the string identifier for the rules group.
-- `SILENCE-ID` is the ID of the affected silence.
-
-The following legacy alerting actions are still supported:
-
-| Action                            | Distinguishing fields                                                 |
-| --------------------------------- | --------------------------------------------------------------------- |
-| Test alert rule                   | `{"action": "test", "resources": [{"type": "panel"}]}`                |
-| Pause alert                       | `{"action": "pause", "resources": [{"type": "alert"}]}`               |
-| Pause all alerts                  | `{"action": "pause-all"}`                                             |
-| Test alert notification channel   | `{"action": "test", "resources": [{"type": "alert-notification"}]}`   |
-| Create alert notification channel | `{"action": "create", "resources": [{"type": "alert-notification"}]}` |
-| Update alert notification channel | `{"action": "update", "resources": [{"type": "alert-notification"}]}` |
-| Delete alert notification channel | `{"action": "delete", "resources": [{"type": "alert-notification"}]}` |
+| Action           | Distinguishing fields                                        |
+| ---------------- | ------------------------------------------------------------ |
+| Query datasource | `{"action": "query", "resources": [{"type": "datasource"}]}` |
 
 #### Reporting
 
@@ -273,15 +300,17 @@ The following legacy alerting actions are still supported:
 | Delete playlist                   | `{"action": "delete", "resources": [{"type": "playlist"}]}`                          |
 | Create a snapshot                 | `{"action": "create", "resources": [{"type": "dashboard"}, {"type": "snapshot"}]}`   |
 | Delete a snapshot                 | `{"action": "delete", "resources": [{"type": "snapshot"}]}`                          |
+| Delete a snapshot by delete key   | `{"action": "delete", "resources": [{"type": "snapshot"}]}`                          |
 
 #### Provisioning
 
-| Action                           | Distinguishing fields                      |
-| -------------------------------- | ------------------------------------------ |
-| Reload provisioned dashboards    | `{"action": "provisioning-dashboards"}`    |
-| Reload provisioned datasources   | `{"action": "provisioning-datasources"}`   |
-| Reload provisioned plugins       | `{"action": "provisioning-plugins"}`       |
-| Reload provisioned notifications | `{"action": "provisioning-notifications"}` |
+| Action                            | Distinguishing fields                      |
+| --------------------------------- | ------------------------------------------ |
+| Reload provisioned dashboards     | `{"action": "provisioning-dashboards"}`    |
+| Reload provisioned datasources    | `{"action": "provisioning-datasources"}`   |
+| Reload provisioned plugins        | `{"action": "provisioning-plugins"}`       |
+| Reload provisioned alerts         | `{"action": "provisioning-alerts"}`        |
+| Reload provisioned access control | `{"action": "provisioning-accesscontrol"}` |
 
 #### Plugins management
 
@@ -292,16 +321,45 @@ The following legacy alerting actions are still supported:
 
 #### Miscellaneous
 
-| Action              | Distinguishing fields                                        |
-| ------------------- | ------------------------------------------------------------ |
-| Set licensing token | `{"action": "create", "requestUri": "/api/licensing/token"}` |
+| Action                   | Distinguishing fields                                        |
+| ------------------------ | ------------------------------------------------------------ |
+| Set licensing token      | `{"action": "create", "requestUri": "/api/licensing/token"}` |
+| Save billing information | `{"action": "billing-information"}`                          |
+
+#### Cloud migration management
+
+{{< docs/public-preview product="Cloud Migration Assistant" featureFlag="onPremToCloudMigrations" >}}
+
+| Action                           | Distinguishing fields                                       |
+| -------------------------------- | ----------------------------------------------------------- |
+| Connect to a cloud instance      | `{"action": "connect-instance"}`                            |
+| Disconnect from a cloud instance | `{"action": "disconnect-instance"}`                         |
+| Build a snapshot                 | `{"action": "build", "resources": [{"type": "snapshot"}]}`  |
+| Upload a snapshot                | `{"action": "upload", "resources": [{"type": "snapshot"}]}` |
+
+#### Generic actions
+
+In addition to the actions listed above, any HTTP request (`POST`, `PATCH`, `PUT`, and `DELETE`)
+against the API is recorded with one of the following generic actions.
+
+Furthermore, you can also record `GET` requests. See below how to configure it.
+
+| Action         | Distinguishing fields          |
+| -------------- | ------------------------------ |
+| POST request   | `{"action": "post-action"}`    |
+| PATCH request  | `{"action": "partial-update"}` |
+| PUT request    | `{"action": "update"}`         |
+| DELETE request | `{"action": "delete"}`         |
+| GET request    | `{"action": "retrieve"}`       |
 
 ## Configuration
 
-> **Note:** The auditing feature is disabled by default.
+{{% admonition type="note" %}}
+The auditing feature is disabled by default.
+{{% /admonition %}}
 
 Audit logs can be saved into files, sent to a Loki instance or sent to the Grafana default logger. By default, only the file exporter is enabled.
-You can choose which exporter to use in the [configuration file]({{< relref "../configure-grafana/" >}}).
+You can choose which exporter to use in the [configuration file]({{< relref "../configure-grafana" >}}).
 
 Options are `file`, `loki`, and `logger`. Use spaces to separate multiple modes, such as `file loki`.
 
@@ -315,11 +373,14 @@ enabled = false
 loggers = file
 # Keep dashboard content in the logs (request or response fields); this can significantly increase the size of your logs.
 log_dashboard_content = false
-# Log all GET requests and always include request body for generic POST/PUT/PATCH requests.
+# Keep requests and responses body; this can significantly increase the size of your logs.
 verbose = false
-# By default Grafana logs requests even if the status code indicates that no changes to the system were made.
-# Set to false to only log requests with 2xx, 3xx, 401, 403, 500 responses.
-log_all_status_codes = true
+# Write an audit log for every status code.
+# By default it only logs the following ones: 2XX, 3XX, 401, 403 and 500.
+log_all_status_codes = false
+# Maximum response body (in bytes) to be audited; 500KiB by default.
+# May help reducing the memory footprint caused by auditing.
+max_response_size_bytes = 512000
 ```
 
 Each exporter has its own configuration fields.
@@ -342,16 +403,21 @@ max_file_size_mb = 256
 
 Audit logs are sent to a [Loki](/oss/loki/) service, through HTTP or gRPC.
 
-> **Note:** The HTTP option for the Loki exporter is available only in Grafana Enterprise version 7.4 and later.
+{{% admonition type="note" %}}
+The HTTP option for the Loki exporter is available only in Grafana Enterprise version 7.4 and later.
+{{% /admonition %}}
 
 ```ini
 [auditing.logs.loki]
 # Set the communication protocol to use with Loki (can be grpc or http)
 type = grpc
-# Set the address for writing logs to Loki (format must be host:port)
+# Set the address for writing logs to Loki
 url = localhost:9095
 # Defaults to true. If true, it establishes a secure connection to Loki
 tls = true
+# Set the tenant ID for Loki communication, which is disabled by default.
+# The tenant ID is required to interact with Loki running in multi-tenant mode.
+tenant_id =
 ```
 
 If you have multiple Grafana instances sending logs to the same Loki service or if you are using Loki for non-audit logs, audit logs come with additional labels to help identifying them:
@@ -360,6 +426,15 @@ If you have multiple Grafana instances sending logs to the same Loki service or 
 - **grafana_instance** - Application URL.
 - **kind** - `auditing`
 
+When basic authentication is needed to ingest logs in your Loki instance, you can specify credentials in the URL field. For example:
+
+```ini
+# Set the communication protocol to use with Loki (can be grpc or http)
+type = http
+# Set the address for writing logs to Loki
+url = user:password@localhost:3000
+```
+
 ### Console exporter
 
-Audit logs are sent to the Grafana default logger. The audit logs use the `auditing.console` logger and are logged on `debug`-level, learn how to enable debug logging in the [log configuration]({{< relref "../configure-grafana/#log" >}}) section of the documentation. Accessing the audit logs in this way is not recommended for production use.
+Audit logs are sent to the Grafana default logger. The audit logs use the `auditing.console` logger and are logged on `debug`-level, learn how to enable debug logging in the [log configuration]({{< relref "../configure-grafana#log" >}}) section of the documentation. Accessing the audit logs in this way is not recommended for production use.

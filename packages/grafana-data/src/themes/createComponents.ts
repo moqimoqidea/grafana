@@ -49,6 +49,10 @@ export interface ThemeComponents {
   horizontalDrawer: {
     defaultHeight: number;
   };
+  table: {
+    rowHoverBackground: string;
+    rowSelected: string;
+  };
 }
 
 export function createComponents(colors: ThemeColors, shadows: ThemeShadows): ThemeComponents {
@@ -76,10 +80,10 @@ export function createComponents(colors: ThemeColors, shadows: ThemeShadows): Th
     input,
     panel,
     dropdown: {
-      background: input.background,
+      background: colors.background.elevated,
     },
     tooltip: {
-      background: colors.background.secondary,
+      background: colors.background.elevated,
       text: colors.text.primary,
     },
     dashboard: {
@@ -93,7 +97,7 @@ export function createComponents(colors: ThemeColors, shadows: ThemeShadows): Th
       width: 57,
     },
     menuTabs: {
-      height: 41,
+      height: 5,
     },
     textHighlight: {
       text: colors.warning.contrastText,
@@ -101,6 +105,10 @@ export function createComponents(colors: ThemeColors, shadows: ThemeShadows): Th
     },
     horizontalDrawer: {
       defaultHeight: 400,
+    },
+    table: {
+      rowHoverBackground: colors.action.hover,
+      rowSelected: colors.action.selected,
     },
   };
 }

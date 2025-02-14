@@ -1,9 +1,12 @@
+import { css } from '@emotion/css';
 import { isEqual } from 'lodash';
-import React, { createRef, PureComponent } from 'react';
+import { createRef, PureComponent } from 'react';
+import * as React from 'react';
 import ReactDOM from 'react-dom';
 import { FixedSizeList } from 'react-window';
 
-import { ThemeContext } from '../../themes/ThemeContext';
+import { GrafanaTheme2, ThemeContext } from '@grafana/data';
+
 import { CompletionItem, CompletionItemGroup, CompletionItemKind } from '../../types/completion';
 import { flattenGroupItems, calculateLongestLabel, calculateListSizes } from '../../utils/typeahead';
 
@@ -53,7 +56,7 @@ export class Typeahead extends PureComponent<Props, State> {
 
     const allItems = flattenGroupItems(this.props.groupedItems);
     const longestLabel = calculateLongestLabel(allItems);
-    const { listWidth, listHeight, itemHeight } = calculateListSizes(this.context.v1, allItems, longestLabel);
+    const { listWidth, listHeight, itemHeight } = calculateListSizes(this.context, allItems, longestLabel);
     this.setState({
       listWidth,
       listHeight,
@@ -87,7 +90,7 @@ export class Typeahead extends PureComponent<Props, State> {
     if (isEqual(prevProps.groupedItems, this.props.groupedItems) === false) {
       const allItems = flattenGroupItems(this.props.groupedItems);
       const longestLabel = calculateLongestLabel(allItems);
-      const { listWidth, listHeight, itemHeight } = calculateListSizes(this.context.v1, allItems, longestLabel);
+      const { listWidth, listHeight, itemHeight } = calculateListSizes(this.context, allItems, longestLabel);
       this.setState({ listWidth, listHeight, itemHeight, allItems, typeaheadIndex: null });
     }
   };
@@ -156,13 +159,14 @@ export class Typeahead extends PureComponent<Props, State> {
   render() {
     const { prefix, isOpen = false, origin } = this.props;
     const { allItems, listWidth, listHeight, itemHeight, hoveredItem, typeaheadIndex } = this.state;
+    const styles = getStyles(this.context);
 
     const showDocumentation = hoveredItem || typeaheadIndex;
     const documentationItem = allItems[hoveredItem ? hoveredItem : typeaheadIndex || 0];
 
     return (
       <Portal origin={origin} isOpen={isOpen} style={this.menuPosition}>
-        <ul className="typeahead" data-testid="typeahead">
+        <ul role="menu" className={styles.typeahead} data-testid="typeahead">
           <FixedSizeList
             ref={this.listRef}
             itemCount={allItems.length}
@@ -209,15 +213,15 @@ interface PortalProps {
   style: string;
 }
 
-class Portal extends PureComponent<PortalProps, {}> {
+class Portal extends PureComponent<React.PropsWithChildren<PortalProps>, {}> {
   node: HTMLElement;
 
-  constructor(props: PortalProps) {
+  constructor(props: React.PropsWithChildren<PortalProps>) {
     super(props);
     const { index = 0, origin = 'query', style } = props;
     this.node = document.createElement('div');
     this.node.setAttribute('style', style);
-    this.node.classList.add(`slate-typeahead`, `slate-typeahead-${origin}-${index}`);
+    this.node.classList.add(`slate-typeahead-${origin}-${index}`);
     document.body.appendChild(this.node);
   }
 
@@ -237,3 +241,24 @@ class Portal extends PureComponent<PortalProps, {}> {
     return null;
   }
 }
+
+const getStyles = (theme: GrafanaTheme2) => ({
+  typeahead: css({
+    position: 'relative',
+    zIndex: theme.zIndex.typeahead,
+    borderRadius: theme.shape.radius.default,
+    border: `1px solid ${theme.components.panel.borderColor}`,
+    maxHeight: '66vh',
+    overflowY: 'scroll',
+    overflowX: 'hidden',
+    outline: 'none',
+    listStyle: 'none',
+    background: theme.components.panel.background,
+    color: theme.colors.text.primary,
+    boxShadow: theme.shadows.z2,
+
+    strong: {
+      color: theme.v1.palette.yellow,
+    },
+  }),
+});

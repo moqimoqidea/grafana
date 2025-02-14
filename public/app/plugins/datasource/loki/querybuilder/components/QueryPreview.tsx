@@ -1,8 +1,5 @@
-import React from 'react';
+import { EditorRow, EditorFieldGroup, RawQuery } from '@grafana/plugin-ui';
 
-import { EditorRow, EditorFieldGroup, EditorField } from '@grafana/ui';
-
-import { RawQuery } from '../../../prometheus/querybuilder/shared/RawQuery';
 import { lokiGrammar } from '../../syntax';
 
 export interface Props {
@@ -13,9 +10,7 @@ export function QueryPreview({ query }: Props) {
   return (
     <EditorRow>
       <EditorFieldGroup>
-        <EditorField label="Raw query">
-          <RawQuery query={query} lang={{ grammar: lokiGrammar, name: 'lokiql' }} />
-        </EditorField>
+        <RawQuery query={query} language={{ grammar: lokiGrammar, name: 'lokiql' }} />
       </EditorFieldGroup>
     </EditorRow>
   );

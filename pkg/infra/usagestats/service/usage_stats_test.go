@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"runtime"
+	"sync"
 	"testing"
 	"time"
 
@@ -16,13 +17,21 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/grafana/grafana/pkg/api/routing"
+	"github.com/grafana/grafana/pkg/infra/db"
+	"github.com/grafana/grafana/pkg/infra/db/dbtest"
 	"github.com/grafana/grafana/pkg/infra/kvstore"
+	"github.com/grafana/grafana/pkg/infra/tracing"
 	"github.com/grafana/grafana/pkg/infra/usagestats"
-	"github.com/grafana/grafana/pkg/plugins"
-	"github.com/grafana/grafana/pkg/services/sqlstore"
-	"github.com/grafana/grafana/pkg/services/sqlstore/mockstore"
+	"github.com/grafana/grafana/pkg/services/accesscontrol/acimpl"
+	"github.com/grafana/grafana/pkg/services/featuremgmt"
+	"github.com/grafana/grafana/pkg/services/supportbundles/supportbundlestest"
 	"github.com/grafana/grafana/pkg/setting"
+	"github.com/grafana/grafana/pkg/tests/testsuite"
 )
+
+func TestMain(m *testing.M) {
+	testsuite.Run(m)
+}
 
 // This is to ensure that the interface contract is held by the implementation
 func Test_InterfaceContractValidity(t *testing.T) {
@@ -38,14 +47,14 @@ func Test_InterfaceContractValidity(t *testing.T) {
 func TestMetrics(t *testing.T) {
 	const metricName = "stats.test_metric.count"
 
-	sqlStore := mockstore.NewSQLStoreMock()
-	uss := createService(t, setting.Cfg{}, sqlStore, false)
+	sqlStore := dbtest.NewFakeDB()
+	uss := createService(t, sqlStore, false)
 
-	uss.RegisterMetricsFunc(func(context.Context) (map[string]interface{}, error) {
-		return map[string]interface{}{metricName: 1}, nil
+	uss.RegisterMetricsFunc(func(context.Context) (map[string]any, error) {
+		return map[string]any{metricName: 1}, nil
 	})
 
-	err := uss.sendUsageStats(context.Background())
+	_, err := uss.sendUsageStats(context.Background())
 	require.NoError(t, err)
 
 	t.Run("Given reporting not enabled and sending usage stats", func(t *testing.T) {
@@ -54,12 +63,13 @@ func TestMetrics(t *testing.T) {
 			sendUsageStats = origSendUsageStats
 		})
 		statsSent := false
-		sendUsageStats = func(uss *UsageStats, b *bytes.Buffer) {
+		sendUsageStats = func(uss *UsageStats, ctx context.Context, b *bytes.Buffer) error {
 			statsSent = true
+			return nil
 		}
 
 		uss.Cfg.ReportingEnabled = false
-		err := uss.sendUsageStats(context.Background())
+		_, err := uss.sendUsageStats(context.Background())
 		require.NoError(t, err)
 
 		require.False(t, statsSent)
@@ -73,10 +83,10 @@ func TestMetrics(t *testing.T) {
 		uss.Cfg = &setting.Cfg{
 			ReportingEnabled:     true,
 			BuildVersion:         "5.0.0",
-			AnonymousEnabled:     true,
+			Anonymous:            setting.AnonymousSettings{Enabled: true},
 			BasicAuthEnabled:     true,
-			LDAPEnabled:          true,
-			AuthProxyEnabled:     true,
+			LDAPAuthEnabled:      true,
+			AuthProxy:            setting.AuthProxySettings{Enabled: true},
 			Packaging:            "deb",
 			ReportingDistributor: "hosted-grafana",
 		}
@@ -105,8 +115,10 @@ func TestMetrics(t *testing.T) {
 		})
 		usageStatsURL = ts.URL
 
-		err := uss.sendUsageStats(context.Background())
-		require.NoError(t, err)
+		go func() {
+			_, err := uss.sendUsageStats(context.Background())
+			require.NoError(t, err)
+		}()
 
 		// Wait for fake HTTP server to receive a request
 		var resp httpResp
@@ -126,7 +138,7 @@ func TestMetrics(t *testing.T) {
 
 		require.NotNil(t, resp.responseBuffer)
 
-		j := make(map[string]interface{})
+		j := make(map[string]any)
 		err = json.Unmarshal(resp.responseBuffer.Bytes(), &j)
 		require.NoError(t, err)
 
@@ -137,19 +149,19 @@ func TestMetrics(t *testing.T) {
 		usageId := uss.GetUsageStatsId(context.Background())
 		assert.NotEmpty(t, usageId)
 
-		metrics, ok := j["metrics"].(map[string]interface{})
+		metrics, ok := j["metrics"].(map[string]any)
 		require.True(t, ok)
 		assert.EqualValues(t, 1, metrics[metricName])
 	})
 }
 
 func TestGetUsageReport_IncludesMetrics(t *testing.T) {
-	sqlStore := mockstore.NewSQLStoreMock()
-	uss := createService(t, setting.Cfg{}, sqlStore, true)
+	sqlStore := dbtest.NewFakeDB()
+	uss := createService(t, sqlStore, true)
 	metricName := "stats.test_metric.count"
 
-	uss.RegisterMetricsFunc(func(context.Context) (map[string]interface{}, error) {
-		return map[string]interface{}{metricName: 1}, nil
+	uss.RegisterMetricsFunc(func(context.Context) (map[string]any, error) {
+		return map[string]any{metricName: 1}, nil
 	})
 
 	report, err := uss.GetUsageReport(context.Background())
@@ -162,65 +174,59 @@ func TestGetUsageReport_IncludesMetrics(t *testing.T) {
 func TestRegisterMetrics(t *testing.T) {
 	const goodMetricName = "stats.test_external_metric.count"
 
-	sqlStore := mockstore.NewSQLStoreMock()
-	uss := createService(t, setting.Cfg{}, sqlStore, false)
-	metrics := map[string]interface{}{"stats.test_metric.count": 1, "stats.test_metric_second.count": 2}
+	sqlStore := dbtest.NewFakeDB()
+	uss := createService(t, sqlStore, false)
+	metrics := sync.Map{}
+	metrics.Store("stats.test_metric.count", 1)
+	metrics.Store("stats.test_metric_second.count", 2)
 
-	uss.RegisterMetricsFunc(func(context.Context) (map[string]interface{}, error) {
-		return map[string]interface{}{goodMetricName: 1}, nil
+	uss.RegisterMetricsFunc(func(context.Context) (map[string]any, error) {
+		return map[string]any{goodMetricName: 1}, nil
 	})
 
 	{
 		extMetrics, err := uss.externalMetrics[0](context.Background())
 		require.NoError(t, err)
-		assert.Equal(t, map[string]interface{}{goodMetricName: 1}, extMetrics)
+		assert.Equal(t, map[string]any{goodMetricName: 1}, extMetrics)
 	}
 
-	uss.gatherMetrics(context.Background(), metrics)
-	assert.Equal(t, 1, metrics[goodMetricName])
-	metricsCount := len(metrics)
+	uss.gatherMetrics(context.Background(), &metrics)
+	v, ok := metrics.Load(goodMetricName)
+	assert.True(t, ok)
+	assert.Equal(t, 1, v)
+	metricsCountBefore := 0
+	metrics.Range(func(_, _ any) bool {
+		metricsCountBefore++
+		return true
+	})
 
 	t.Run("do not add metrics that return an error when fetched", func(t *testing.T) {
 		const badMetricName = "stats.test_external_metric_error.count"
 
-		uss.RegisterMetricsFunc(func(context.Context) (map[string]interface{}, error) {
-			return map[string]interface{}{badMetricName: 1}, errors.New("some error")
+		uss.RegisterMetricsFunc(func(context.Context) (map[string]any, error) {
+			return map[string]any{badMetricName: 1}, errors.New("some error")
 		})
-		uss.gatherMetrics(context.Background(), metrics)
+		uss.gatherMetrics(context.Background(), &metrics)
 
-		extErrorMetric := metrics[badMetricName]
-		extMetric := metrics[goodMetricName]
+		extErrorMetric, ok := metrics.Load(badMetricName)
+		assert.False(t, ok)
+		extMetric, ok := metrics.Load(goodMetricName)
+		assert.True(t, ok)
 
 		require.Nil(t, extErrorMetric, "Invalid metric should not be added")
 		assert.Equal(t, 1, extMetric)
-		assert.Len(t, metrics, metricsCount, "Expected same number of metrics before and after collecting bad metric")
-		assert.EqualValues(t, 1, metrics["stats.usagestats.debug.collect.error.count"])
+
+		metricsCountAfter := 0
+		metrics.Range(func(_, _ any) bool {
+			metricsCountAfter++
+			return true
+		})
+
+		assert.Equal(t, metricsCountAfter, metricsCountBefore, "Expected same number of metrics before and after collecting bad metric")
+		errCount, ok := metrics.Load("stats.usagestats.debug.collect.error.count")
+		assert.True(t, ok)
+		assert.EqualValues(t, 1, errCount)
 	})
-}
-
-type fakePluginStore struct {
-	plugins.Store
-
-	plugins map[string]plugins.PluginDTO
-}
-
-func (pr fakePluginStore) Plugin(_ context.Context, pluginID string) (plugins.PluginDTO, bool) {
-	p, exists := pr.plugins[pluginID]
-
-	return p, exists
-}
-
-func (pr fakePluginStore) Plugins(_ context.Context, pluginTypes ...plugins.Type) []plugins.PluginDTO {
-	var result []plugins.PluginDTO
-	for _, v := range pr.plugins {
-		for _, t := range pluginTypes {
-			if v.Type == t {
-				result = append(result, v)
-			}
-		}
-	}
-
-	return result
 }
 
 type httpResp struct {
@@ -229,16 +235,21 @@ type httpResp struct {
 	err            error
 }
 
-func createService(t *testing.T, cfg setting.Cfg, sqlStore sqlstore.Store, withDB bool) *UsageStats {
+func createService(t *testing.T, sqlStore db.DB, withDB bool) *UsageStats {
 	t.Helper()
 	if withDB {
-		sqlStore = sqlstore.InitTestDB(t)
+		sqlStore = db.InitTestDB(t)
 	}
 
-	return ProvideService(
-		&cfg,
-		&fakePluginStore{},
+	cfg := setting.NewCfg()
+	service, _ := ProvideService(
+		cfg,
 		kvstore.ProvideService(sqlStore),
 		routing.NewRouteRegister(),
+		tracing.InitializeTracerForTest(),
+		acimpl.ProvideAccessControl(featuremgmt.WithFeatures()),
+		supportbundlestest.NewFakeBundleService(),
 	)
+
+	return service
 }

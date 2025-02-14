@@ -1,20 +1,19 @@
 import { css } from '@emotion/css';
 import cx from 'classnames';
-import React, { memo, MouseEvent, MutableRefObject, useCallback, useEffect, useMemo, useState } from 'react';
+import { memo, MouseEvent, useCallback, useEffect, useMemo, useState } from 'react';
 import useMeasure from 'react-use/lib/useMeasure';
 
 import { DataFrame, GrafanaTheme2, LinkModel } from '@grafana/data';
-import { Icon, Spinner, useStyles2, useTheme2 } from '@grafana/ui';
+import { Icon, Spinner, useStyles2 } from '@grafana/ui';
 
 import { Edge } from './Edge';
-import { EdgeArrowMarker } from './EdgeArrowMarker';
 import { EdgeLabel } from './EdgeLabel';
 import { Legend } from './Legend';
 import { Marker } from './Marker';
 import { Node } from './Node';
 import { ViewControls } from './ViewControls';
 import { Config, defaultConfig, useLayout } from './layout';
-import { EdgeDatum, NodeDatum, NodesMarker } from './types';
+import { EdgeDatumLayout, NodeDatum, NodesMarker, ZoomMode } from './types';
 import { useCategorizeFrames } from './useCategorizeFrames';
 import { useContextMenu } from './useContextMenu';
 import { useFocusPositionOnLayout } from './useFocusPositionOnLayout';
@@ -24,83 +23,83 @@ import { useZoom } from './useZoom';
 import { processNodes, Bounds, findConnectedNodesForEdge, findConnectedNodesForNode } from './utils';
 
 const getStyles = (theme: GrafanaTheme2) => ({
-  wrapper: css`
-    label: wrapper;
-    height: 100%;
-    width: 100%;
-    overflow: hidden;
-    position: relative;
-  `,
+  wrapper: css({
+    label: 'wrapper',
+    height: '100%',
+    width: '100%',
+    overflow: 'hidden',
+    position: 'relative',
+  }),
 
-  svg: css`
-    label: svg;
-    height: 100%;
-    width: 100%;
-    overflow: visible;
-    font-size: 10px;
-    cursor: move;
-  `,
+  svg: css({
+    label: 'svg',
+    height: '100%',
+    width: '100%',
+    overflow: 'visible',
+    fontSize: '10px',
+    cursor: 'move',
+  }),
 
-  svgPanning: css`
-    label: svgPanning;
-    user-select: none;
-  `,
+  svgPanning: css({
+    label: 'svgPanning',
+    userSelect: 'none',
+  }),
 
-  noDataMsg: css`
-    height: 100%;
-    width: 100%;
-    display: grid;
-    place-items: center;
-    font-size: ${theme.typography.h4.fontSize};
-    color: ${theme.colors.text.secondary};
-  `,
+  noDataMsg: css({
+    height: '100%',
+    width: '100%',
+    display: 'grid',
+    placeItems: 'center',
+    fontSize: theme.typography.h4.fontSize,
+    color: theme.colors.text.secondary,
+  }),
 
-  mainGroup: css`
-    label: mainGroup;
-    will-change: transform;
-  `,
+  mainGroup: css({
+    label: 'mainGroup',
+    willChange: 'transform',
+  }),
 
-  viewControls: css`
-    label: viewControls;
-    position: absolute;
-    left: 2px;
-    bottom: 3px;
-    right: 0;
-    display: flex;
-    align-items: flex-end;
-    justify-content: space-between;
-    pointer-events: none;
-  `,
-  legend: css`
-    label: legend;
-    background: ${theme.colors.background.secondary};
-    box-shadow: ${theme.shadows.z1};
-    padding-bottom: 5px;
-    margin-right: 10px;
-  `,
-  viewControlsWrapper: css`
-    margin-left: auto;
-  `,
-  alert: css`
-    label: alert;
-    padding: 5px 8px;
-    font-size: 10px;
-    text-shadow: 0 1px 0 rgba(0, 0, 0, 0.2);
-    border-radius: ${theme.shape.borderRadius()};
-    align-items: center;
-    position: absolute;
-    top: 0;
-    right: 0;
-    background: ${theme.colors.warning.main};
-    color: ${theme.colors.warning.contrastText};
-  `,
-  loadingWrapper: css`
-    label: loadingWrapper;
-    height: 100%;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-  `,
+  viewControls: css({
+    label: 'viewControls',
+    position: 'absolute',
+    left: '2px',
+    bottom: '3px',
+    right: 0,
+    display: 'flex',
+    alignItems: 'flex-end',
+    justifyContent: 'space-between',
+    pointerEvents: 'none',
+  }),
+  legend: css({
+    label: 'legend',
+    background: theme.colors.background.secondary,
+    boxShadow: theme.shadows.z1,
+    paddingBottom: '5px',
+    marginRight: '10px',
+  }),
+  viewControlsWrapper: css({
+    marginLeft: 'auto',
+  }),
+  alert: css({
+    label: 'alert',
+    padding: '5px 8px',
+    fontSize: '10px',
+    textShadow: '0 1px 0 rgba(0, 0, 0, 0.2)',
+    borderRadius: theme.shape.radius.default,
+    alignItems: 'center',
+    position: 'absolute',
+    top: 0,
+    right: 0,
+    background: theme.colors.warning.main,
+    color: theme.colors.warning.contrastText,
+  }),
+  loadingWrapper: css({
+    label: 'loadingWrapper',
+    height: '100%',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+  }),
 });
 
 // Limits the number of visible nodes, mainly for performance reasons. Nodes above the limit are accessible by expanding
@@ -112,8 +111,10 @@ interface Props {
   dataFrames: DataFrame[];
   getLinks: (dataFrame: DataFrame, rowIndex: number) => LinkModel[];
   nodeLimit?: number;
+  panelId?: string;
+  zoomMode?: ZoomMode;
 }
-export function NodeGraph({ getLinks, dataFrames, nodeLimit }: Props) {
+export function NodeGraph({ getLinks, dataFrames, nodeLimit, panelId, zoomMode }: Props) {
   const nodeCountLimit = nodeLimit || defaultNodeCountLimit;
   const { edges: edgesDataFrames, nodes: nodesDataFrames } = useCategorizeFrames(dataFrames);
 
@@ -123,13 +124,18 @@ export function NodeGraph({ getLinks, dataFrames, nodeLimit }: Props) {
   const firstNodesDataFrame = nodesDataFrames[0];
   const firstEdgesDataFrame = edgesDataFrames[0];
 
-  const theme = useTheme2();
+  // Ensure we use unique IDs for the marker tip elements, since IDs are global
+  // in the entire HTML document. This prevents hidden tips when an earlier
+  // occurence is hidden (editor is open in front of an existing node graph
+  // panel) or when the earlier tips have different properties (color, size, or
+  // shape for example).
+  const svgIdNamespace = panelId || 'nodegraphpanel';
 
   // TODO we should be able to allow multiple dataframes for both edges and nodes, could be issue with node ids which in
   //  that case should be unique or figure a way to link edges and nodes dataframes together.
   const processed = useMemo(
-    () => processNodes(firstNodesDataFrame, firstEdgesDataFrame, theme),
-    [firstEdgesDataFrame, firstNodesDataFrame, theme]
+    () => processNodes(firstNodesDataFrame, firstEdgesDataFrame),
+    [firstEdgesDataFrame, firstNodesDataFrame]
   );
 
   // We need hover state here because for nodes we also highlight edges and for edges have labels separate to make
@@ -159,15 +165,17 @@ export function NodeGraph({ getLinks, dataFrames, nodeLimit }: Props) {
     config,
     nodeCountLimit,
     width,
-    focusedNodeId
+    focusedNodeId,
+    processed.hasFixedPositions
   );
 
-  // If we move from grid to graph layout and we have focused node lets get its position to center there. We want do
+  // If we move from grid to graph layout, and we have focused node lets get its position to center there. We want to
   // do it specifically only in that case.
   const focusPosition = useFocusPositionOnLayout(config, nodes, focusedNodeId);
   const { panRef, zoomRef, onStepUp, onStepDown, isPanning, position, scale, isMaxZoom, isMinZoom } = usePanAndZoom(
     bounds,
-    focusPosition
+    focusPosition,
+    zoomMode
   );
 
   const { onEdgeOpen, onNodeOpen, MenuComponent } = useContextMenu(
@@ -180,11 +188,11 @@ export function NodeGraph({ getLinks, dataFrames, nodeLimit }: Props) {
   );
   const styles = useStyles2(getStyles);
 
-  // This cannot be inline func or it will create infinite render cycle.
+  // This cannot be inline func, or it will create infinite render cycle.
   const topLevelRef = useCallback(
-    (r) => {
+    (r: HTMLDivElement) => {
       measureRef(r);
-      (zoomRef as MutableRefObject<HTMLElement | null>).current = r;
+      zoomRef.current = r;
     },
     [measureRef, zoomRef]
   );
@@ -210,7 +218,6 @@ export function NodeGraph({ getLinks, dataFrames, nodeLimit }: Props) {
             className={styles.mainGroup}
             style={{ transform: `scale(${scale}) translate(${Math.floor(position.x)}px, ${Math.floor(position.y)}px)` }}
           >
-            <EdgeArrowMarker />
             {!config.gridLayout && (
               <Edges
                 edges={edges}
@@ -219,6 +226,7 @@ export function NodeGraph({ getLinks, dataFrames, nodeLimit }: Props) {
                 onClick={onEdgeOpen}
                 onMouseEnter={setEdgeHover}
                 onMouseLeave={clearEdgeHover}
+                svgIdNamespace={svgIdNamespace}
               />
             )}
             <Nodes
@@ -309,8 +317,8 @@ const Nodes = memo(function Nodes(props: NodesProps) {
             !props.hoveringIds || props.hoveringIds.length === 0
               ? 'default'
               : props.hoveringIds?.includes(n.id)
-              ? 'active'
-              : 'inactive'
+                ? 'active'
+                : 'inactive'
           }
         />
       ))}
@@ -333,10 +341,11 @@ const Markers = memo(function Nodes(props: MarkersProps) {
 });
 
 interface EdgesProps {
-  edges: EdgeDatum[];
+  edges: EdgeDatumLayout[];
   nodeHoveringId?: string;
   edgeHoveringId?: string;
-  onClick: (event: MouseEvent<SVGElement>, link: EdgeDatum) => void;
+  svgIdNamespace: string;
+  onClick: (event: MouseEvent<SVGElement>, link: EdgeDatumLayout) => void;
   onMouseEnter: (id: string) => void;
   onMouseLeave: (id: string) => void;
 }
@@ -355,6 +364,7 @@ const Edges = memo(function Edges(props: EdgesProps) {
           onClick={props.onClick}
           onMouseEnter={props.onMouseEnter}
           onMouseLeave={props.onMouseLeave}
+          svgIdNamespace={props.svgIdNamespace}
         />
       ))}
     </>
@@ -362,7 +372,7 @@ const Edges = memo(function Edges(props: EdgesProps) {
 });
 
 interface EdgeLabelsProps {
-  edges: EdgeDatum[];
+  edges: EdgeDatumLayout[];
   nodeHoveringId?: string;
   edgeHoveringId?: string;
 }
@@ -370,10 +380,13 @@ const EdgeLabels = memo(function EdgeLabels(props: EdgeLabelsProps) {
   return (
     <>
       {props.edges.map((e, index) => {
+        // We show the edge label in case user hovers over the edge directly or if they hover over node edge is
+        // connected to.
         const shouldShow =
           (e.source as NodeDatum).id === props.nodeHoveringId ||
           (e.target as NodeDatum).id === props.nodeHoveringId ||
           props.edgeHoveringId === e.id;
+
         const hasStats = e.mainStat || e.secondaryStat;
         return shouldShow && hasStats && <EdgeLabel key={e.id} edge={e} />;
       })}
@@ -381,8 +394,8 @@ const EdgeLabels = memo(function EdgeLabels(props: EdgeLabelsProps) {
   );
 });
 
-function usePanAndZoom(bounds: Bounds, focus?: { x: number; y: number }) {
-  const { scale, onStepDown, onStepUp, ref, isMax, isMin } = useZoom();
+function usePanAndZoom(bounds: Bounds, focus?: { x: number; y: number }, zoomMode?: ZoomMode) {
+  const { scale, onStepDown, onStepUp, ref, isMax, isMin } = useZoom({ zoomMode });
   const { state: panningState, ref: panRef } = usePanning<SVGSVGElement>({
     scale,
     bounds,

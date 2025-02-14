@@ -1,5 +1,4 @@
 import { css, cx } from '@emotion/css';
-import React from 'react';
 
 import { dateTimeFormat, GrafanaTheme2, TimeZone } from '@grafana/data';
 import { DeleteButton, Icon, Tooltip, useStyles2, useTheme2 } from '@grafana/ui';
@@ -38,9 +37,7 @@ export const ServiceAccountTokensTable = ({ tokens, timeZone, tokenActionsDisabl
               </td>
               <td>{formatDate(timeZone, key.created)}</td>
               <td>{formatLastUsedAtDate(timeZone, key.lastUsedAt)}</td>
-              <td className="width-1 text-center">
-                {key.isRevoked && <span className="label label-tag label-tag--gray">Revoked</span>}
-              </td>
+              <td className="width-1 text-center">{key.isRevoked && <TokenRevoked />}</td>
               <td>
                 <DeleteButton
                   aria-label={`Delete service account token ${key.name}`}
@@ -77,6 +74,20 @@ function formatSecondsLeftUntilExpiration(secondsUntilExpiration: number): strin
   return `Expires in ${daysFormat}`;
 }
 
+const TokenRevoked = () => {
+  const styles = useStyles2(getStyles);
+  return (
+    <span className={styles.hasExpired}>
+      Revoked
+      <span className={styles.tooltipContainer}>
+        <Tooltip content="This token has been publicly exposed. Please rotate this token">
+          <Icon name="exclamation-triangle" className={styles.toolTipIcon} />
+        </Tooltip>
+      </span>
+    </span>
+  );
+};
+
 interface TokenExpirationProps {
   timeZone: TimeZone;
   token: ApiKey;
@@ -110,25 +121,26 @@ const TokenExpiration = ({ timeZone, token }: TokenExpirationProps) => {
 };
 
 const getStyles = (theme: GrafanaTheme2) => ({
-  tableRow: (hasExpired: boolean | undefined) => css`
-    color: ${hasExpired ? theme.colors.text.secondary : theme.colors.text.primary};
-  `,
-  tooltipContainer: css`
-    margin-left: ${theme.spacing(1)};
-  `,
-  toolTipIcon: css`
-    color: ${theme.colors.error.text};
-  `,
-  secondsUntilExpiration: css`
-    color: ${theme.colors.warning.text};
-  `,
-  hasExpired: css`
-    color: ${theme.colors.error.text};
-  `,
-  neverExpire: css`
-    color: ${theme.colors.text.secondary};
-  `,
-  section: css`
-    margin-bottom: ${theme.spacing(4)};
-  `,
+  tableRow: (hasExpired: boolean | undefined) =>
+    css({
+      color: hasExpired ? theme.colors.text.secondary : theme.colors.text.primary,
+    }),
+  tooltipContainer: css({
+    marginLeft: theme.spacing(1),
+  }),
+  toolTipIcon: css({
+    color: theme.colors.error.text,
+  }),
+  secondsUntilExpiration: css({
+    color: theme.colors.warning.text,
+  }),
+  hasExpired: css({
+    color: theme.colors.error.text,
+  }),
+  neverExpire: css({
+    color: theme.colors.text.secondary,
+  }),
+  section: css({
+    marginBottom: theme.spacing(4),
+  }),
 });

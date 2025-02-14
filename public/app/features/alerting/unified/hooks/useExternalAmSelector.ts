@@ -1,127 +1,128 @@
-import { countBy, keyBy } from 'lodash';
+import { DataSourceSettings } from '@grafana/data';
+import {
+  AlertManagerDataSourceJsonData,
+  ExternalAlertmanagersConnectionStatus,
+} from 'app/plugins/datasource/alertmanager/types';
 
-import { DataSourceInstanceSettings, DataSourceJsonData, DataSourceSettings } from '@grafana/data';
-import { AlertManagerDataSourceJsonData } from 'app/plugins/datasource/alertmanager/types';
-import { useSelector } from 'app/types';
+import { alertmanagerApi } from '../api/alertmanagerApi';
+import { dataSourcesApi } from '../api/dataSourcesApi';
+import { isAlertmanagerDataSource } from '../utils/datasource';
 
-import { getAlertManagerDataSources } from '../utils/datasource';
+export type ConnectionStatus = 'active' | 'pending' | 'dropped' | 'inconclusive' | 'uninterested' | 'unknown';
 
-import { useUnifiedAlertingSelector } from './useUnifiedAlertingSelector';
+export interface ExternalAlertmanagerDataSourceWithStatus {
+  dataSourceSettings: DataSourceSettings<AlertManagerDataSourceJsonData>;
+  status: ConnectionStatus;
+}
 
-const SUFFIX_REGEX = /\/api\/v[1|2]\/alerts/i;
-type AlertmanagerConfig = { url: string; status: string; actualUrl: string };
+interface UseExternalDataSourceAlertmanagersProps {
+  refetchOnMountOrArgChange?: boolean;
+}
 
-export function useExternalAmSelector(): AlertmanagerConfig[] | [] {
-  const discoveredAlertmanagers = useSelector(
-    (state) => state.unifiedAlerting.externalAlertmanagers.discoveredAlertmanagers.result?.data
+/**
+ * Returns all configured Alertmanager data sources and their connection status with the internal ruler
+ */
+export function useExternalDataSourceAlertmanagers({
+  refetchOnMountOrArgChange = false,
+}: UseExternalDataSourceAlertmanagersProps = {}): ExternalAlertmanagerDataSourceWithStatus[] {
+  // firstly we'll fetch the settings for all datasources and filter for "alertmanager" type
+  const { alertmanagerDataSources } = dataSourcesApi.endpoints.getAllDataSourceSettings.useQuery(undefined, {
+    refetchOnReconnect: true,
+    // we will refetch the list of data sources every time the component is rendered so we always show fresh data after a user
+    // may have made changes to a data source and came back to the list
+    refetchOnMountOrArgChange,
+    selectFromResult: (result) => {
+      const alertmanagerDataSources = result.currentData?.filter(isAlertmanagerDataSource) ?? [];
+      return { ...result, alertmanagerDataSources };
+    },
+  });
+
+  // we'll also fetch the configuration for which Alertmanagers we are forwarding Grafana-managed alerts too
+  const { currentData: externalAlertmanagers } = alertmanagerApi.endpoints.getExternalAlertmanagers.useQuery(
+    undefined,
+    { refetchOnReconnect: true, refetchOnMountOrArgChange }
   );
-  const alertmanagerConfig = useSelector(
-    (state) => state.unifiedAlerting.externalAlertmanagers.alertmanagerConfig.result?.alertmanagers
-  );
 
-  if (!discoveredAlertmanagers || !alertmanagerConfig) {
+  if (!alertmanagerDataSources) {
     return [];
   }
 
-  const enabledAlertmanagers: AlertmanagerConfig[] = [];
-  const droppedAlertmanagers: AlertmanagerConfig[] = discoveredAlertmanagers.droppedAlertManagers.map((am) => ({
-    url: am.url.replace(SUFFIX_REGEX, ''),
-    status: 'dropped',
-    actualUrl: am.url,
-  }));
-
-  for (const url of alertmanagerConfig) {
-    if (discoveredAlertmanagers.activeAlertManagers.length === 0) {
-      enabledAlertmanagers.push({
-        url: url,
-        status: 'pending',
-        actualUrl: '',
-      });
-    } else {
-      const matchingActiveAM = discoveredAlertmanagers.activeAlertManagers.find(
-        (am) => am.url === `${url}/api/v2/alerts`
-      );
-      matchingActiveAM
-        ? enabledAlertmanagers.push({
-            url: matchingActiveAM.url.replace(SUFFIX_REGEX, ''),
-            status: 'active',
-            actualUrl: matchingActiveAM.url,
-          })
-        : enabledAlertmanagers.push({
-            url: url,
-            status: 'pending',
-            actualUrl: '',
-          });
-    }
-  }
-
-  return [...enabledAlertmanagers, ...droppedAlertmanagers];
-}
-
-export interface ExternalDataSourceAM {
-  dataSource: DataSourceInstanceSettings<AlertManagerDataSourceJsonData>;
-  url?: string;
-  status: 'active' | 'pending' | 'dropped';
-  statusInconclusive?: boolean;
-}
-
-export function useExternalDataSourceAlertmanagers(): ExternalDataSourceAM[] {
-  const externalDsAlertManagers = getAlertManagerDataSources().filter((ds) => ds.jsonData.handleGrafanaManagedAlerts);
-
-  const alertmanagerDatasources = useSelector((state) =>
-    keyBy(
-      state.dataSources.dataSources.filter((ds) => ds.type === 'alertmanager'),
-      (ds) => ds.uid
-    )
-  );
-
-  const discoveredAlertmanagers = useUnifiedAlertingSelector(
-    (state) => state.externalAlertmanagers.discoveredAlertmanagers.result?.data
-  );
-
-  const droppedAMUrls = countBy(discoveredAlertmanagers?.droppedAlertManagers, (x) => x.url);
-  const activeAMUrls = countBy(discoveredAlertmanagers?.activeAlertManagers, (x) => x.url);
-
-  return externalDsAlertManagers.map<ExternalDataSourceAM>((dsAm) => {
-    const dsSettings = alertmanagerDatasources[dsAm.uid];
-
-    if (!dsSettings) {
-      return {
-        dataSource: dsAm,
-        status: 'pending',
-      };
-    }
-
-    const amUrl = getDataSourceUrlWithProtocol(dsSettings);
-    const amStatusUrl = `${amUrl}/api/v2/alerts`;
-
-    const matchingDroppedUrls = droppedAMUrls[amStatusUrl] ?? 0;
-    const matchingActiveUrls = activeAMUrls[amStatusUrl] ?? 0;
-
-    const isDropped = matchingDroppedUrls > 0;
-    const isActive = matchingActiveUrls > 0;
-
-    // Multiple Alertmanagers of the same URL may exist (e.g. with different credentials)
-    // Alertmanager response only contains URLs, so in case of duplication, we are not able
-    // to distinguish which is which, resulting in an inconclusive status.
-    const isStatusInconclusive = matchingDroppedUrls + matchingActiveUrls > 1;
-
-    const status = isDropped ? 'dropped' : isActive ? 'active' : 'pending';
+  return alertmanagerDataSources.map<ExternalAlertmanagerDataSourceWithStatus>((dataSourceSettings) => {
+    const status = externalAlertmanagers
+      ? determineAlertmanagerConnectionStatus(externalAlertmanagers, dataSourceSettings)
+      : 'unknown';
 
     return {
-      dataSource: dsAm,
-      url: dsSettings.url,
+      dataSourceSettings,
       status,
-      statusInconclusive: isStatusInconclusive,
     };
   });
 }
 
-function getDataSourceUrlWithProtocol<T extends DataSourceJsonData>(dsSettings: DataSourceSettings<T>) {
-  const hasProtocol = new RegExp('^[^:]*://').test(dsSettings.url);
-  if (!hasProtocol) {
-    return `http://${dsSettings.url}`; // Grafana append http protocol if there is no any
+// using the information from /api/v1/ngalert/alertmanagers we should derive the connection status of a single data source
+function determineAlertmanagerConnectionStatus(
+  externalAlertmanagers: ExternalAlertmanagersConnectionStatus,
+  dataSourceSettings: DataSourceSettings<AlertManagerDataSourceJsonData>
+): ConnectionStatus {
+  const isInterestedInAlerts = dataSourceSettings.jsonData.handleGrafanaManagedAlerts;
+  if (!isInterestedInAlerts) {
+    return 'uninterested';
   }
 
-  return dsSettings.url;
+  const isActive =
+    externalAlertmanagers?.activeAlertManagers.some((am) => {
+      return isAlertmanagerMatchByURL(dataSourceSettings.url, am.url);
+    }) ?? [];
+
+  const isDropped =
+    externalAlertmanagers?.droppedAlertManagers.some((am) => {
+      return isAlertmanagerMatchByURL(dataSourceSettings.url, am.url);
+    }) ?? [];
+
+  // the Alertmanager is being adopted (pending) if it is interested in handling alerts but not in either "active" or "dropped"
+  const isPending = !isActive && !isDropped;
+  if (isPending) {
+    return 'pending';
+  }
+
+  // Multiple Alertmanagers of the same URL may exist (e.g. with different credentials)
+  // Alertmanager response only contains URLs, so when the URL exists in both active and dropped, we are not able
+  // to distinguish which is which, resulting in an inconclusive status.
+  const isInconclusive = isActive && isDropped;
+  if (isInconclusive) {
+    return 'inconclusive';
+  }
+
+  // if we get here, it's neither "uninterested", nor "inconclusive" nor "pending"
+  if (isActive) {
+    return 'active';
+  } else if (isDropped) {
+    return 'dropped';
+  }
+
+  return 'unknown';
+}
+
+// the vanilla Alertmanager and Mimir Alertmanager mount their API endpoints on different sub-paths
+// Cortex also uses the same paths as Mimir
+const MIMIR_ALERTMANAGER_PATH = '/alertmanager/api/v2/alerts';
+const VANILLA_ALERTMANAGER_PATH = '/api/v2/alerts';
+
+// when using the Mimir Alertmanager, those paths are mounted under "/alertmanager"
+function isAlertmanagerMatchByURL(dataSourceUrl: string, alertmanagerUrl: string) {
+  const normalizedUrl = normalizeDataSourceURL(dataSourceUrl);
+
+  const prometheusAlertmanagerMatch = alertmanagerUrl === `${normalizedUrl}${VANILLA_ALERTMANAGER_PATH}`;
+  const mimirAlertmanagerMatch = alertmanagerUrl === `${normalizedUrl}${MIMIR_ALERTMANAGER_PATH}`;
+
+  return prometheusAlertmanagerMatch || mimirAlertmanagerMatch;
+}
+
+// Grafana prepends the http protocol if there isn't one, but it doesn't store that in the datasource settings
+export function normalizeDataSourceURL(url: string) {
+  const hasProtocol = new RegExp('^[^:]*://').test(url);
+  const urlWithProtocol = hasProtocol ? url : `http://${url}`;
+
+  // replace trailing slashes
+  return urlWithProtocol.replace(/\/+$/, '');
 }

@@ -1,17 +1,35 @@
 import { DashboardLoadedEvent } from '@grafana/data';
-import { reportInteraction } from '@grafana/runtime';
+import { config, reportInteraction } from '@grafana/runtime';
 
 import { isCloudWatchLogsQuery, isCloudWatchMetricsQuery } from './guards';
+import { migrateMetricQuery } from './migrations/metricQueryMigrations';
 import pluginJson from './plugin.json';
-import { CloudWatchMetricsQuery, CloudWatchQuery, MetricEditorMode, MetricQueryType } from './types';
+import {
+  CloudWatchLogsQuery,
+  CloudWatchMetricsQuery,
+  CloudWatchQuery,
+  LogsQueryLanguage,
+  MetricEditorMode,
+  MetricQueryType,
+} from './types';
+import { filterMetricsQuery } from './utils/utils';
 
-interface CloudWatchOnDashboardLoadedTrackingEvent {
+type CloudWatchOnDashboardLoadedTrackingEvent = {
   grafana_version?: string;
   dashboard_id?: string;
   org_id?: number;
 
   /* The number of CloudWatch logs queries present in the dashboard*/
   logs_queries_count: number;
+
+  /* The number of Logs queries that use Logs Insights query language */
+  logs_cwli_queries_count: number;
+
+  /* The number of Logs queries that use SQL language */
+  logs_sql_queries_count: number;
+
+  /* The number of Logs queries that use PPL language */
+  logs_ppl_queries_count: number;
 
   /* The number of CloudWatch metrics queries present in the dashboard*/
   metrics_queries_count: number;
@@ -44,7 +62,10 @@ interface CloudWatchOnDashboardLoadedTrackingEvent {
   /* The number of "Insights" queries that are using the code mode. 
   Should be measured in relation to metrics_query_count, e.g metrics_query_builder_count + metrics_query_code_count = metrics_query_count */
   metrics_query_code_count: number;
-}
+
+  /* The number of CloudWatch metrics queries that have specified an account in its cross account metric stat query */
+  metrics_queries_with_account_count: number;
+};
 
 export const onDashboardLoadedHandler = ({
   payload: { dashboardId, orgId, grafanaVersion, queries },
@@ -56,14 +77,32 @@ export const onDashboardLoadedHandler = ({
       return;
     }
 
-    const logsQueries = cloudWatchQueries.filter(isCloudWatchLogsQuery);
-    const metricsQueries = cloudWatchQueries.filter(isCloudWatchMetricsQuery);
+    let logsQueries: CloudWatchLogsQuery[] = [];
+    let metricsQueries: CloudWatchMetricsQuery[] = [];
+
+    for (const query of cloudWatchQueries) {
+      if (query.hide) {
+        continue;
+      }
+
+      if (isCloudWatchLogsQuery(query)) {
+        query.logGroupNames?.length && logsQueries.push(query);
+      } else if (isCloudWatchMetricsQuery(query)) {
+        const migratedQuery = migrateMetricQuery(query);
+        filterMetricsQuery(migratedQuery) && metricsQueries.push(query);
+      }
+    }
 
     const e: CloudWatchOnDashboardLoadedTrackingEvent = {
       grafana_version: grafanaVersion,
       dashboard_id: dashboardId,
       org_id: orgId,
       logs_queries_count: logsQueries?.length,
+      logs_cwli_queries_count: logsQueries?.filter(
+        (q) => !q.queryLanguage || q.queryLanguage === LogsQueryLanguage.CWLI
+      ).length,
+      logs_sql_queries_count: logsQueries?.filter((q) => q.queryLanguage === LogsQueryLanguage.SQL).length,
+      logs_ppl_queries_count: logsQueries?.filter((q) => q.queryLanguage === LogsQueryLanguage.PPL).length,
       metrics_queries_count: metricsQueries?.length,
       metrics_search_count: 0,
       metrics_search_builder_count: 0,
@@ -72,6 +111,7 @@ export const onDashboardLoadedHandler = ({
       metrics_query_count: 0,
       metrics_query_builder_count: 0,
       metrics_query_code_count: 0,
+      metrics_queries_with_account_count: 0,
     };
 
     for (const q of metricsQueries) {
@@ -81,12 +121,15 @@ export const onDashboardLoadedHandler = ({
         q.metricQueryType === MetricQueryType.Search && q.metricEditorMode === MetricEditorMode.Code
       );
       e.metrics_search_match_exact_count += +Boolean(isMetricSearchBuilder(q) && q.matchExact);
-      e.metrics_query_count += +Boolean(q.metricQueryType === MetricQueryType.Query);
+      e.metrics_query_count += +Boolean(q.metricQueryType === MetricQueryType.Insights);
       e.metrics_query_builder_count += +Boolean(
-        q.metricQueryType === MetricQueryType.Query && q.metricEditorMode === MetricEditorMode.Builder
+        q.metricQueryType === MetricQueryType.Insights && q.metricEditorMode === MetricEditorMode.Builder
       );
       e.metrics_query_code_count += +Boolean(
-        q.metricQueryType === MetricQueryType.Query && q.metricEditorMode === MetricEditorMode.Code
+        q.metricQueryType === MetricQueryType.Insights && q.metricEditorMode === MetricEditorMode.Code
+      );
+      e.metrics_queries_with_account_count += +Boolean(
+        config.featureToggles.cloudWatchCrossAccountQuerying && isMetricSearchBuilder(q) && q.accountId
       );
     }
 
@@ -94,6 +137,16 @@ export const onDashboardLoadedHandler = ({
   } catch (error) {
     console.error('error in cloudwatch tracking handler', error);
   }
+};
+
+type SampleQueryTrackingEvent = {
+  queryLanguage: LogsQueryLanguage;
+  queryCategory: string;
+};
+
+export const trackSampleQuerySelection = (props: SampleQueryTrackingEvent) => {
+  const { queryLanguage, queryCategory } = props;
+  reportInteraction('cloudwatch-logs-cheat-sheet-query-clicked', { queryLanguage, queryCategory });
 };
 
 const isMetricSearchBuilder = (q: CloudWatchMetricsQuery) =>

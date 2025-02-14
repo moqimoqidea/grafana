@@ -1,7 +1,19 @@
 import { AnyAction } from '@reduxjs/toolkit';
-import React from 'react';
+import { omit } from 'lodash';
+import { useMemo } from 'react';
+import * as React from 'react';
 
-import { DataSourcePluginMeta, DataSourceSettings as DataSourceSettingsType } from '@grafana/data';
+import {
+  DataSourcePluginContextProvider,
+  DataSourcePluginMeta,
+  DataSourceSettings as DataSourceSettingsType,
+  PluginExtensionPoints,
+  PluginExtensionDataSourceConfigContext,
+  DataSourceJsonData,
+  DataSourceUpdatedSuccessfully,
+} from '@grafana/data';
+import { getDataSourceSrv, usePluginComponentExtensions } from '@grafana/runtime';
+import appEvents from 'app/core/app_events';
 import PageLoader from 'app/core/components/PageLoader/PageLoader';
 import { DataSourceSettingsState, useDispatch } from 'app/types';
 
@@ -19,6 +31,7 @@ import {
   useTestDataSource,
   useUpdateDatasource,
 } from '../state';
+import { trackDsConfigClicked, trackDsConfigUpdated } from '../tracking';
 import { DataSourceRights } from '../types';
 
 import { BasicSettings } from './BasicSettings';
@@ -85,7 +98,7 @@ export type ViewProps = {
   onNameChange: (name: string) => AnyAction;
   onOptionsChange: (dataSource: DataSourceSettingsType) => AnyAction;
   onTest: () => void;
-  onUpdate: (dataSource: DataSourceSettingsType) => Promise<void>;
+  onUpdate: (dataSource: DataSourceSettingsType) => Promise<DataSourceSettingsType>;
 };
 
 export function EditDataSourceView({
@@ -106,16 +119,44 @@ export function EditDataSourceView({
   const { readOnly, hasWriteRights, hasDeleteRights } = dataSourceRights;
   const hasDataSource = dataSource.id > 0;
 
-  const onSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
-    e.preventDefault();
+  const dsi = getDataSourceSrv()?.getInstanceSettings(dataSource.uid);
 
-    await onUpdate({ ...dataSource });
+  const onSubmit = async (e: React.MouseEvent<HTMLButtonElement> | React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    trackDsConfigClicked('save_and_test');
+
+    try {
+      await onUpdate({ ...dataSource });
+      trackDsConfigUpdated({ item: 'success' });
+      appEvents.publish(new DataSourceUpdatedSuccessfully());
+    } catch (error) {
+      trackDsConfigUpdated({ item: 'fail' });
+      return;
+    }
 
     onTest();
   };
 
+  const extensionPointId = PluginExtensionPoints.DataSourceConfig;
+  const { extensions } = usePluginComponentExtensions<{
+    context: PluginExtensionDataSourceConfigContext<DataSourceJsonData>;
+  }>({ extensionPointId });
+
+  const allowedExtensions = useMemo(() => {
+    const allowedPluginIds = ['grafana-pdc-app', 'grafana-auth-app'];
+    return extensions.filter((e) => allowedPluginIds.includes(e.pluginId));
+  }, [extensions]);
+
   if (loadError) {
-    return <DataSourceLoadError dataSourceRights={dataSourceRights} onDelete={onDelete} />;
+    return (
+      <DataSourceLoadError
+        dataSourceRights={dataSourceRights}
+        onDelete={() => {
+          trackDsConfigClicked('delete');
+          onDelete();
+        }}
+      />
+    );
   }
 
   if (loading) {
@@ -123,12 +164,16 @@ export function EditDataSourceView({
   }
 
   // TODO - is this needed?
-  if (!hasDataSource) {
+  if (!hasDataSource || !dsi) {
     return null;
   }
 
   if (pageId) {
-    return <DataSourcePluginConfigPage pageId={pageId} plugin={plugin} />;
+    return (
+      <DataSourcePluginContextProvider instanceSettings={dsi}>
+        <DataSourcePluginConfigPage pageId={pageId} plugin={plugin} />
+      </DataSourcePluginContextProvider>
+    );
   }
 
   return (
@@ -144,26 +189,56 @@ export function EditDataSourceView({
         isDefault={dataSource.isDefault}
         onDefaultChange={onDefaultChange}
         onNameChange={onNameChange}
+        disabled={readOnly || !hasWriteRights}
       />
 
       {plugin && (
-        <DataSourcePluginSettings
-          plugin={plugin}
-          dataSource={dataSource}
-          dataSourceMeta={dataSourceMeta}
-          onModelChange={onOptionsChange}
-        />
+        <DataSourcePluginContextProvider instanceSettings={dsi}>
+          <DataSourcePluginSettings
+            plugin={plugin}
+            dataSource={dataSource}
+            dataSourceMeta={dataSourceMeta}
+            onModelChange={onOptionsChange}
+          />
+        </DataSourcePluginContextProvider>
       )}
 
-      <DataSourceTestingStatus testingStatus={testingStatus} />
+      {/* Extension point */}
+      {allowedExtensions.map((extension) => {
+        const Component = extension.component;
+
+        return (
+          <div key={extension.id}>
+            <Component
+              context={{
+                dataSource: omit(dataSource, ['secureJsonData']),
+                dataSourceMeta: dataSourceMeta,
+                testingStatus,
+                setJsonData: (jsonData) =>
+                  onOptionsChange({
+                    ...dataSource,
+                    jsonData: { ...dataSource.jsonData, ...jsonData },
+                  }),
+              }}
+            />
+          </div>
+        );
+      })}
+
+      <DataSourceTestingStatus testingStatus={testingStatus} exploreUrl={exploreUrl} dataSource={dataSource} />
 
       <ButtonRow
         onSubmit={onSubmit}
-        onDelete={onDelete}
-        onTest={onTest}
-        exploreUrl={exploreUrl}
-        canSave={!readOnly && hasWriteRights}
+        onDelete={() => {
+          trackDsConfigClicked('delete');
+          onDelete();
+        }}
+        onTest={() => {
+          trackDsConfigClicked('test');
+          onTest();
+        }}
         canDelete={!readOnly && hasDeleteRights}
+        canSave={!readOnly && hasWriteRights}
       />
     </form>
   );

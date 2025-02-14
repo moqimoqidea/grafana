@@ -10,15 +10,17 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
 
 	"cloud.google.com/go/storage"
-	"github.com/grafana/grafana/pkg/build/fsutil"
-	"github.com/grafana/grafana/pkg/build/gcloud"
 	"google.golang.org/api/iterator"
 	"google.golang.org/api/option"
+
+	"github.com/grafana/grafana/pkg/build/fsutil"
+	"github.com/grafana/grafana/pkg/build/gcloud"
 )
 
 var (
@@ -46,14 +48,25 @@ type File struct {
 
 // New creates a new Client by checking for the Google Cloud SDK auth key and/or environment variable.
 func New() (*Client, error) {
-	client, err := newClient()
+	storageClient, err := newClient()
 	if err != nil {
 		return nil, err
 	}
 
-	return &Client{
-		Client: *client,
-	}, nil
+	client := &Client{
+		Client: *storageClient,
+	}
+	client.SetRetryer()
+
+	return client, nil
+}
+
+// SetRetryer adds a retry strategy for the googleapi client calls that fail.
+func (client *Client) SetRetryer() {
+	client.SetRetry([]storage.RetryOption{
+		storage.WithPolicy(storage.RetryAlways),
+		storage.WithErrorFunc(storage.ShouldRetry),
+	}...)
 }
 
 // newClient initializes the google-cloud-storage (GCS) client.
@@ -89,19 +102,29 @@ func (client *Client) CopyLocalDir(ctx context.Context, dir string, bucket *stor
 	}
 	log.Printf("Number or files to be copied over: %d\n", len(files))
 
+	errs := make([]error, 0, 10)
+	errsLock := sync.Mutex{}
+
 	for _, chunk := range asChunks(files, maxThreads) {
 		var wg sync.WaitGroup
 		for _, f := range chunk {
 			wg.Add(1)
 			go func(file File) {
 				defer wg.Done()
-				err = client.Copy(ctx, file, bucket, bucketPath, trim)
+				err := client.Copy(ctx, file, bucket, bucketPath, trim)
 				if err != nil {
 					log.Printf("failed to copy objects, err: %s\n", err.Error())
+					errsLock.Lock()
+					errs = append(errs, err)
+					errsLock.Unlock()
 				}
 			}(f)
 		}
 		wg.Wait()
+	}
+
+	if len(errs) > 0 {
+		return fmt.Errorf("copy operation failed: %s", errs)
 	}
 
 	return nil
@@ -109,7 +132,7 @@ func (client *Client) CopyLocalDir(ctx context.Context, dir string, bucket *stor
 
 // Copy copies a single local file into the bucket at the provided path.
 // trim variable should be set to true if the full object path is needed - false otherwise.
-func (client *Client) Copy(ctx context.Context, file File, bucket *storage.BucketHandle, remote string, trim bool) error {
+func (client *Client) Copy(ctx context.Context, file File, bucket *storage.BucketHandle, remote string, trim bool) (resultErr error) {
 	if bucket == nil {
 		return ErrorNilBucket
 	}
@@ -139,14 +162,17 @@ func (client *Client) Copy(ctx context.Context, file File, bucket *storage.Bucke
 	defer func() {
 		if err := wc.Close(); err != nil {
 			log.Println("failed to close writer", "err", err)
+			// Keep the original error intact if there was one:
+			if resultErr == nil {
+				resultErr = err
+			}
 		}
 	}()
 
 	if _, err = io.Copy(wc, localFile); err != nil {
-		return fmt.Errorf("failed to copy to Cloud Storage: %w", err)
+		resultErr = fmt.Errorf("failed to copy to Cloud Storage: %w", err)
+		return
 	}
-
-	log.Printf("Successfully uploaded tarball to Google Cloud Storage, path: %s/%s\n", remote, file.FullPath)
 
 	return nil
 }
@@ -205,7 +231,6 @@ func (client *Client) RemoteCopy(ctx context.Context, file File, fromBucket, toB
 		return fmt.Errorf("failed to copy object %s, to %s, err: %w", file.FullPath, dstObject, err)
 	}
 
-	log.Printf("%s was successfully copied to %v bucket!.\n\n", file.FullPath, toBucket)
 	return nil
 }
 
@@ -257,7 +282,6 @@ func (client *Client) Delete(ctx context.Context, bucket *storage.BucketHandle, 
 	if err := object.Delete(ctx); err != nil {
 		return fmt.Errorf("cannot delete %s, err: %w", path, err)
 	}
-	log.Printf("Successfully deleted tarball to Google Cloud Storage, path: %s", path)
 	return nil
 }
 
@@ -267,8 +291,9 @@ func ListLocalFiles(dir string) ([]File, error) {
 	err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
 		if !info.IsDir() {
 			files = append(files, File{
-				FullPath:    path,
-				PathTrimmed: info.Name(),
+				FullPath: path,
+				// Strip the dir name from the filepath
+				PathTrimmed: strings.ReplaceAll(path, dir, ""),
 			})
 		}
 		return nil
@@ -350,12 +375,57 @@ func (client *Client) DownloadDirectory(ctx context.Context, bucket *storage.Buc
 	}
 
 	for _, file := range files {
-		err = client.downloadFile(ctx, bucket, file.FullPath, filepath.Join(destPath, file.PathTrimmed))
+		err = client.downloadFile(ctx, bucket, file.FullPath, file.PathTrimmed)
 		if err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// GetLatestMainBuild gets the latest main build which is successfully uploaded to the gcs bucket.
+func GetLatestMainBuild(ctx context.Context, bucket *storage.BucketHandle, path string) (string, error) {
+	if bucket == nil {
+		return "", ErrorNilBucket
+	}
+
+	query := &storage.Query{
+		Prefix: path,
+	}
+	err := query.SetAttrSelection([]string{"Name", "Generation"})
+	if err != nil {
+		return "", fmt.Errorf("failed to set attribute selector, err: %q", err)
+	}
+	it := bucket.Objects(ctx, query)
+
+	var files []string
+	var oldGeneration int64
+	for {
+		attrs, err := it.Next()
+		if errors.Is(err, iterator.Done) {
+			break
+		}
+		if err != nil {
+			return "", fmt.Errorf("failed to iterate through bucket, err: %w", err)
+		}
+		if attrs.Generation >= oldGeneration {
+			files = append([]string{attrs.Name}, files...)
+			oldGeneration = attrs.Generation
+		} else {
+			files = append(files, attrs.Name)
+		}
+	}
+
+	var latestVersion string
+	for i := 0; i < len(files); i++ {
+		captureVersion := regexp.MustCompile(`(\d+\.\d+\.\d+-\d+)`)
+		if captureVersion.MatchString(files[i]) {
+			latestVersion = captureVersion.FindString(files[i])
+			break
+		}
+	}
+
+	return latestVersion, nil
 }
 
 // downloadFile downloads an object to a file.

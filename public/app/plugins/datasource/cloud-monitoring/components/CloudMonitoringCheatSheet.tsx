@@ -1,9 +1,9 @@
 import { css } from '@emotion/css';
-import React, { PureComponent } from 'react';
+import { PureComponent } from 'react';
 
 import { QueryEditorHelpProps } from '@grafana/data';
 
-import { CloudMonitoringQuery } from '../types';
+import { CloudMonitoringQuery } from '../types/query';
 
 export default class CloudMonitoringCheatSheet extends PureComponent<
   QueryEditorHelpProps<CloudMonitoringQuery>,
@@ -24,12 +24,12 @@ export default class CloudMonitoringCheatSheet extends PureComponent<
           Result: &nbsp;&nbsp;<code>cpu/usage_time - server1-europe-west-1</code>
           <br />
           <br />
-          <label>Patterns</label>
+          <span>Patterns:</span>
           <br />
           <ul
-            className={css`
-              list-style: none;
-            `}
+            className={css({
+              listStyle: 'none',
+            })}
           >
             <li>
               <code>{`${'{{metric.type}}'}`}</code> = metric type e.g. compute.googleapis.com/instance/cpu/usage_time

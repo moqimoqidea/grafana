@@ -1,26 +1,33 @@
-import React, { useEffect } from 'react';
+import { Suspense, useEffect, useLayoutEffect } from 'react';
+import { Navigate, useLocation } from 'react-router-dom-v5-compat';
 // @ts-ignore
 import Drop from 'tether-drop';
 
 import { locationSearchToObject, navigationLogger, reportPageview } from '@grafana/runtime';
+import { ErrorBoundary } from '@grafana/ui';
 
 import { useGrafana } from '../context/GrafanaContext';
+import { contextSrv } from '../services/context_srv';
 
+import { GrafanaRouteError } from './GrafanaRouteError';
+import { GrafanaRouteLoading } from './GrafanaRouteLoading';
 import { GrafanaRouteComponentProps, RouteDescriptor } from './types';
 
-export interface Props extends Omit<GrafanaRouteComponentProps, 'queryParams'> {}
+export interface Props extends Pick<GrafanaRouteComponentProps, 'route' | 'location'> {}
 
 export function GrafanaRoute(props: Props) {
   const { chrome, keybindings } = useGrafana();
 
   chrome.setMatchedRoute(props.route);
 
-  useEffect(() => {
-    keybindings.clearAndInitGlobalBindings();
+  useLayoutEffect(() => {
+    keybindings.clearAndInitGlobalBindings(props.route);
+  }, [keybindings, props.route]);
 
+  useEffect(() => {
     updateBodyClassNames(props.route);
     cleanupDOM();
-    navigationLogger('GrafanaRoute', false, 'Mounted', props.match);
+    navigationLogger('GrafanaRoute', false, 'Mounted', props.route);
 
     return () => {
       navigationLogger('GrafanaRoute', false, 'Unmounted', props.route);
@@ -38,9 +45,34 @@ export function GrafanaRoute(props: Props) {
 
   navigationLogger('GrafanaRoute', false, 'Rendered', props.route);
 
-  return <props.route.component {...props} queryParams={locationSearchToObject(props.location.search)} />;
+  return (
+    <ErrorBoundary>
+      {({ error, errorInfo }) => {
+        if (error) {
+          return <GrafanaRouteError error={error} errorInfo={errorInfo} />;
+        }
+
+        return (
+          <Suspense fallback={<GrafanaRouteLoading />}>
+            <props.route.component {...props} queryParams={locationSearchToObject(props.location.search)} />
+          </Suspense>
+        );
+      }}
+    </ErrorBoundary>
+  );
 }
 
+export function GrafanaRouteWrapper({ route }: Pick<Props, 'route'>) {
+  const location = useLocation();
+  const roles = route.roles ? route.roles() : [];
+  if (roles?.length) {
+    if (!roles.some((r: string) => contextSrv.hasRole(r))) {
+      return <Navigate replace to="/" />;
+    }
+  }
+
+  return <GrafanaRoute route={route} location={location} />;
+}
 function getPageClasses(route: RouteDescriptor) {
   return route.pageClass ? route.pageClass.split(' ') : [];
 }

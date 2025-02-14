@@ -17,7 +17,7 @@ export default class TableModel implements TableData {
   columns: MutableColumn[];
   rows: any[];
   type: string;
-  columnMap: any;
+  columnMap: Record<string, Column>;
   refId?: string;
   meta?: QueryResultMeta;
 
@@ -69,14 +69,14 @@ export default class TableModel implements TableData {
     }
   }
 
-  addRow(row: any[]) {
+  addRow(row: unknown[]) {
     this.rows.push(row);
   }
 }
 
 // Returns true if both rows have matching non-empty fields as well as matching
 // indexes where one field is empty and the other is not
-function areRowsMatching(columns: Column[], row: any[], otherRow: any[]) {
+function areRowsMatching(columns: Column[], row: unknown[], otherRow: unknown[]) {
   let foundFieldToMatch = false;
   for (let columnIndex = 0; columnIndex < columns.length; columnIndex++) {
     if (row[columnIndex] !== undefined && otherRow[columnIndex] !== undefined) {
@@ -107,10 +107,10 @@ export function mergeTablesIntoModel(dst?: TableModel, ...tables: TableModel[]):
   const tableDataTables = tables.filter((table) => !!table.columns);
 
   // Track column indexes of union: name -> index
-  const columnNames: { [key: string]: any } = {};
+  const columnNames: { [key: string]: number } = {};
 
   // Union of all non-value columns
-  const columnsUnion = tableDataTables.slice().reduce((acc, series) => {
+  const columnsUnion = tableDataTables.slice().reduce<MutableColumn[]>((acc, series) => {
     series.columns.forEach((col) => {
       const { text } = col;
       if (columnNames[text] === undefined) {
@@ -119,7 +119,7 @@ export function mergeTablesIntoModel(dst?: TableModel, ...tables: TableModel[]):
       }
     });
     return acc;
-  }, [] as MutableColumn[]);
+  }, []);
 
   // Map old column index to union index per series, e.g.,
   // given columnNames {A: 0, B: 1} and
@@ -127,7 +127,7 @@ export function mergeTablesIntoModel(dst?: TableModel, ...tables: TableModel[]):
   const columnIndexMapper = tableDataTables.map((series) => series.columns.map((col) => columnNames[col.text]));
 
   // Flatten rows of all series and adjust new column indexes
-  const flattenedRows = tableDataTables.reduce((acc, series, seriesIndex) => {
+  const flattenedRows = tableDataTables.reduce<MutableColumn[][]>((acc, series, seriesIndex) => {
     const mapper = columnIndexMapper[seriesIndex];
     series.rows.forEach((row) => {
       const alteredRow: MutableColumn[] = [];
@@ -138,12 +138,12 @@ export function mergeTablesIntoModel(dst?: TableModel, ...tables: TableModel[]):
       acc.push(alteredRow);
     });
     return acc;
-  }, [] as MutableColumn[][]);
+  }, []);
 
   // Merge rows that have same values for columns
-  const mergedRows: { [key: string]: any } = {};
+  const mergedRows: Record<number, MutableColumn[]> = {};
 
-  const compactedRows = flattenedRows.reduce((acc, row, rowIndex) => {
+  const compactedRows = flattenedRows.reduce<MutableColumn[][]>((acc, row, rowIndex) => {
     if (!mergedRows[rowIndex]) {
       // Look from current row onwards
       let offset = rowIndex + 1;
@@ -171,7 +171,7 @@ export function mergeTablesIntoModel(dst?: TableModel, ...tables: TableModel[]):
       acc.push(row);
     }
     return acc;
-  }, [] as MutableColumn[][]);
+  }, []);
 
   model.columns = columnsUnion;
   model.rows = compactedRows;

@@ -1,22 +1,21 @@
 import { css } from '@emotion/css';
-import React, { ReactElement } from 'react';
-import { Draggable } from 'react-beautiful-dnd';
+import { Draggable } from '@hello-pangea/dnd';
+import { ReactElement } from 'react';
 
-import { GrafanaTheme2 } from '@grafana/data';
+import { GrafanaTheme2, TypedVariableModel } from '@grafana/data';
 import { selectors } from '@grafana/e2e-selectors';
 import { reportInteraction } from '@grafana/runtime';
 import { Button, Icon, IconButton, useStyles2, useTheme2 } from '@grafana/ui';
 
-import { hasOptions, isAdHoc, isQuery } from '../guard';
+import { hasOptions } from '../guard';
 import { VariableUsagesButton } from '../inspect/VariableUsagesButton';
 import { getVariableUsages, UsagesToNetwork, VariableUsageTree } from '../inspect/utils';
 import { KeyedVariableIdentifier } from '../state/types';
-import { VariableModel } from '../types';
 import { toKeyedVariableIdentifier } from '../utils';
 
 export interface VariableEditorListRowProps {
   index: number;
-  variable: VariableModel;
+  variable: TypedVariableModel;
   usageTree: VariableUsageTree[];
   usagesNetwork: UsagesToNetwork[];
   onEdit: (identifier: KeyedVariableIdentifier) => void;
@@ -37,7 +36,7 @@ export function VariableEditorListRow({
   const styles = useStyles2(getStyles);
   const definition = getDefinition(variable);
   const usages = getVariableUsages(variable.id, usageTree);
-  const passed = usages > 0 || isAdHoc(variable);
+  const passed = usages > 0 || variable.type === 'adhoc';
   const identifier = toKeyedVariableIdentifier(variable);
 
   return (
@@ -52,7 +51,7 @@ export function VariableEditorListRow({
             ...provided.draggableProps.style,
           }}
         >
-          <td className={styles.column}>
+          <td role="gridcell" className={styles.column}>
             <Button
               size="xs"
               fill="text"
@@ -67,6 +66,7 @@ export function VariableEditorListRow({
             </Button>
           </td>
           <td
+            role="gridcell"
             className={styles.definitionColumn}
             onClick={(event) => {
               event.preventDefault();
@@ -77,42 +77,33 @@ export function VariableEditorListRow({
             {definition}
           </td>
 
-          <td className={styles.column}>
-            <VariableCheckIndicator passed={passed} />
-          </td>
-
-          <td className={styles.column}>
-            <VariableUsagesButton id={variable.id} isAdhoc={isAdHoc(variable)} usages={usagesNetwork} />
-          </td>
-
-          <td className={styles.column}>
-            <IconButton
-              onClick={(event) => {
-                event.preventDefault();
-                reportInteraction('Duplicate variable');
-                propsOnDuplicate(identifier);
-              }}
-              name="copy"
-              title="Duplicate variable"
-              aria-label={selectors.pages.Dashboard.Settings.Variables.List.tableRowDuplicateButtons(variable.name)}
-            />
-          </td>
-
-          <td className={styles.column}>
-            <IconButton
-              onClick={(event) => {
-                event.preventDefault();
-                reportInteraction('Delete variable');
-                propsOnDelete(identifier);
-              }}
-              name="trash-alt"
-              title="Remove variable"
-              aria-label={selectors.pages.Dashboard.Settings.Variables.List.tableRowRemoveButtons(variable.name)}
-            />
-          </td>
-          <td className={styles.column}>
-            <div {...provided.dragHandleProps} className={styles.dragHandle}>
-              <Icon name="draggabledots" size="lg" />
+          <td role="gridcell" className={styles.column}>
+            <div className={styles.icons}>
+              <VariableCheckIndicator passed={passed} />
+              <VariableUsagesButton id={variable.id} isAdhoc={variable.type === 'adhoc'} usages={usagesNetwork} />
+              <IconButton
+                onClick={(event) => {
+                  event.preventDefault();
+                  reportInteraction('Duplicate variable');
+                  propsOnDuplicate(identifier);
+                }}
+                name="copy"
+                tooltip="Duplicate variable"
+                aria-label={selectors.pages.Dashboard.Settings.Variables.List.tableRowDuplicateButtons(variable.name)}
+              />
+              <IconButton
+                onClick={(event) => {
+                  event.preventDefault();
+                  reportInteraction('Delete variable');
+                  propsOnDelete(identifier);
+                }}
+                name="trash-alt"
+                tooltip="Remove variable"
+                aria-label={selectors.pages.Dashboard.Settings.Variables.List.tableRowRemoveButtons(variable.name)}
+              />
+              <div {...provided.dragHandleProps} className={styles.dragHandle}>
+                <Icon name="draggabledots" size="lg" />
+              </div>
             </div>
           </td>
         </tr>
@@ -121,9 +112,9 @@ export function VariableEditorListRow({
   );
 }
 
-function getDefinition(model: VariableModel): string {
+function getDefinition(model: TypedVariableModel): string {
   let definition = '';
-  if (isQuery(model)) {
+  if (model.type === 'query') {
     if (model.definition) {
       definition = model.definition;
     } else if (typeof model.query === 'string') {
@@ -163,30 +154,38 @@ function VariableCheckIndicator({ passed }: VariableCheckIndicatorProps): ReactE
 
 function getStyles(theme: GrafanaTheme2) {
   return {
-    dragHandle: css`
-      cursor: grab;
-    `,
-    column: css`
-      width: 1%;
-    `,
-    nameLink: css`
-      cursor: pointer;
-      color: ${theme.colors.primary.text};
-    `,
-    definitionColumn: css`
-      width: 100%;
-      max-width: 200px;
-      cursor: pointer;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      -o-text-overflow: ellipsis;
-      white-space: nowrap;
-    `,
-    iconPassed: css`
-      color: ${theme.v1.palette.greenBase};
-    `,
-    iconFailed: css`
-      color: ${theme.v1.palette.orange};
-    `,
+    dragHandle: css({
+      cursor: 'grab',
+      marginLeft: theme.spacing(1),
+    }),
+    column: css({
+      width: '1%',
+    }),
+    nameLink: css({
+      cursor: 'pointer',
+      color: theme.colors.primary.text,
+    }),
+    definitionColumn: css({
+      width: '100%',
+      maxWidth: '200px',
+      cursor: 'pointer',
+      overflow: 'hidden',
+      textOverflow: 'ellipsis',
+      OTextOverflow: 'ellipsis',
+      whiteSpace: 'nowrap',
+    }),
+    iconPassed: css({
+      color: theme.v1.palette.greenBase,
+      marginRight: theme.spacing(2),
+    }),
+    iconFailed: css({
+      color: theme.v1.palette.orange,
+      marginRight: theme.spacing(2),
+    }),
+    icons: css({
+      display: 'flex',
+      gap: theme.spacing(2),
+      alignItems: 'center',
+    }),
   };
 }

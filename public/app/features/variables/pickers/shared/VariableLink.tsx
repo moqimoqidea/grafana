@@ -1,23 +1,28 @@
 import { css } from '@emotion/css';
-import React, { FC, MouseEvent, useCallback } from 'react';
+import { MouseEvent, useCallback } from 'react';
 
 import { GrafanaTheme2 } from '@grafana/data';
 import { selectors } from '@grafana/e2e-selectors';
-import { Icon, Tooltip, useStyles2 } from '@grafana/ui';
+import { Icon, useStyles2 } from '@grafana/ui';
+import { LoadingIndicator } from '@grafana/ui/src/components/PanelChrome/LoadingIndicator';
+import { t } from 'app/core/internationalization';
+
+import { getStyles as getTagBadgeStyles } from '../../../../core/components/TagFilter/TagBadge';
+import { ALL_VARIABLE_TEXT } from '../../constants';
 
 interface Props {
   onClick: () => void;
   text: string;
   loading: boolean;
   onCancel: () => void;
-  disabled: boolean; // todo: optional?
+  disabled?: boolean;
   /**
    *  htmlFor, needed for the label
    */
   id: string;
 }
 
-export const VariableLink: FC<Props> = ({ loading, disabled, onClick: propsOnClick, text, onCancel, id }) => {
+export const VariableLink = ({ loading, disabled, onClick: propsOnClick, text, onCancel, id }: Props) => {
   const styles = useStyles2(getStyles);
   const onClick = useCallback(
     (event: MouseEvent<HTMLButtonElement>) => {
@@ -37,7 +42,7 @@ export const VariableLink: FC<Props> = ({ loading, disabled, onClick: propsOnCli
         id={id}
       >
         <VariableLinkText text={text} />
-        <LoadingIndicator onCancel={onCancel} />
+        <LoadingIndicator loading onCancel={onCancel} />
       </div>
     );
   }
@@ -63,61 +68,47 @@ interface VariableLinkTextProps {
   text: string;
 }
 
-const VariableLinkText: FC<VariableLinkTextProps> = ({ text }) => {
+const VariableLinkText = ({ text }: VariableLinkTextProps) => {
   const styles = useStyles2(getStyles);
-  return <span className={styles.textAndTags}>{text}</span>;
-};
-
-const LoadingIndicator: FC<Pick<Props, 'onCancel'>> = ({ onCancel }) => {
-  const onClick = useCallback(
-    (event: MouseEvent) => {
-      event.preventDefault();
-      onCancel();
-    },
-    [onCancel]
-  );
-
   return (
-    <Tooltip content="Cancel query">
-      <Icon
-        className="spin-clockwise"
-        name="sync"
-        size="xs"
-        onClick={onClick}
-        aria-label={selectors.components.LoadingIndicator.icon}
-      />
-    </Tooltip>
+    <span className={styles.textAndTags}>
+      {text === ALL_VARIABLE_TEXT ? t('variable.picker.link-all', 'All') : text}
+    </span>
   );
 };
 
-const getStyles = (theme: GrafanaTheme2) => ({
-  container: css`
-    max-width: 500px;
-    padding-right: 10px;
-    padding: 0 ${theme.spacing(1)};
-    background-color: ${theme.components.input.background};
-    border: 1px solid ${theme.components.input.borderColor};
-    border-radius: ${theme.shape.borderRadius(1)};
-    display: flex;
-    align-items: center;
-    color: ${theme.colors.text};
-    height: ${theme.spacing(theme.components.height.md)};
+const getStyles = (theme: GrafanaTheme2) => {
+  const tagBadgeStyles = getTagBadgeStyles(theme);
 
-    .label-tag {
-      margin: 0 5px;
-    }
+  return {
+    container: css({
+      maxWidth: '500px',
+      paddingRight: '10px',
+      padding: theme.spacing(0, 1),
+      backgroundColor: theme.components.input.background,
+      border: `1px solid ${theme.components.input.borderColor}`,
+      borderRadius: theme.shape.radius.default,
+      display: 'flex',
+      alignItems: 'center',
+      color: theme.colors.text.primary,
+      height: theme.spacing(theme.components.height.md),
 
-    &:disabled {
-      background-color: ${theme.colors.action.disabledBackground};
-      color: ${theme.colors.action.disabledText};
-      border: 1px solid ${theme.colors.action.disabledBackground};
-    }
-  `,
-  textAndTags: css`
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    margin-right: ${theme.spacing(0.25)};
-    user-select: none;
-  `,
-});
+      [`.${tagBadgeStyles.badge}`]: {
+        margin: '0 5px',
+      },
+
+      '&:disabled': {
+        backgroundColor: theme.colors.action.disabledBackground,
+        color: theme.colors.action.disabledText,
+        border: `1px solid ${theme.colors.action.disabledBackground}`,
+      },
+    }),
+    textAndTags: css({
+      overflow: 'hidden',
+      textOverflow: 'ellipsis',
+      whiteSpace: 'nowrap',
+      marginRight: theme.spacing(0.25),
+      userSelect: 'none',
+    }),
+  };
+};

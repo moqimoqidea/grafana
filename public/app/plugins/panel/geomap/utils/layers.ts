@@ -1,8 +1,8 @@
-import { PluggableMap } from 'ol';
+import { Map as OpenLayersMap } from 'ol';
 import { FeatureLike } from 'ol/Feature';
 import { Subject } from 'rxjs';
 
-import { getFrameMatchers, MapLayerHandler, MapLayerOptions, PanelData } from '@grafana/data/src';
+import { getFrameMatchers, MapLayerHandler, MapLayerOptions, PanelData, textUtil } from '@grafana/data';
 import { config } from '@grafana/runtime/src';
 
 import { GeomapPanel } from '../GeomapPanel';
@@ -92,7 +92,7 @@ export async function updateLayer(panel: GeomapPanel, uid: string, newOptions: M
 
 export async function initLayer(
   panel: GeomapPanel,
-  map: PluggableMap,
+  map: OpenLayersMap,
   options: MapLayerOptions,
   isBasemap?: boolean
 ): Promise<MapLayerState> {
@@ -112,6 +112,10 @@ export async function initLayer(
   const item = geomapLayerRegistry.getIfExists(options.type);
   if (!item) {
     return Promise.reject('unknown layer: ' + options.type);
+  }
+
+  if (options.config?.attribution) {
+    options.config.attribution = textUtil.sanitizeTextPanelContent(options.config.attribution);
   }
 
   const handler = await item.create(map, options, panel.props.eventBus, config.theme2);
@@ -150,6 +154,6 @@ export async function initLayer(
   return state;
 }
 
-export const getMapLayerState = (l: any) => {
-  return l?.__state as MapLayerState;
+export const getMapLayerState = (l: any): MapLayerState => {
+  return l?.__state;
 };

@@ -1,8 +1,6 @@
 import { css } from '@emotion/css';
-import React from 'react';
 
-import { GrafanaTheme } from '@grafana/data';
-import { Alert, useStyles } from '@grafana/ui';
+import { Alert } from '@grafana/ui';
 import { getMessageFromError } from 'app/core/utils/errors';
 import { DashboardInitError, AppNotificationSeverity } from 'app/types';
 
@@ -11,7 +9,6 @@ export interface Props {
 }
 
 export const DashboardFailed = ({ initError }: Props) => {
-  const styles = useStyles(getStyles);
   if (!initError) {
     return null;
   }
@@ -25,13 +22,11 @@ export const DashboardFailed = ({ initError }: Props) => {
   );
 };
 
-export const getStyles = (theme: GrafanaTheme) => {
-  return {
-    dashboardLoading: css`
-      height: 60vh;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-    `,
-  };
+export const styles = {
+  dashboardLoading: css({
+    height: '60vh',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+  }),
 };
