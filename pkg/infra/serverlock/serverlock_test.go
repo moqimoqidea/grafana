@@ -8,17 +8,24 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/grafana/grafana/pkg/infra/db"
 	"github.com/grafana/grafana/pkg/infra/log"
-	"github.com/grafana/grafana/pkg/services/sqlstore"
+	"github.com/grafana/grafana/pkg/infra/tracing"
+	"github.com/grafana/grafana/pkg/tests/testsuite"
 )
+
+func TestMain(m *testing.M) {
+	testsuite.Run(m)
+}
 
 func createTestableServerLock(t *testing.T) *ServerLockService {
 	t.Helper()
 
-	store := sqlstore.InitTestDB(t)
+	store := db.InitTestDB(t)
 
 	return &ServerLockService{
 		SQLStore: store,
+		tracer:   tracing.InitializeTracerForTest(),
 		log:      log.New("test-logger"),
 	}
 }
@@ -103,10 +110,11 @@ func TestLockAndRelease(t *testing.T) {
 		}
 
 		// inserting a row with lock in the past
-		err := sl.SQLStore.WithTransactionalDbSession(context.Background(), func(sess *sqlstore.DBSession) error {
-			r, err := sess.Insert(lock)
+		err := sl.SQLStore.WithTransactionalDbSession(context.Background(), func(sess *db.Session) error {
+			affectedRows, err := sess.Insert(&lock)
 			require.NoError(t, err)
-			require.Equal(t, int64(1), r)
+			require.Equal(t, int64(1), affectedRows)
+			require.Equal(t, int64(1), lock.Id)
 			return nil
 		})
 		require.NoError(t, err)
@@ -116,7 +124,7 @@ func TestLockAndRelease(t *testing.T) {
 		require.NoError(t, err)
 
 		//validate that the lock LastExecution was updated (at least different from the original)
-		err = sl.SQLStore.WithTransactionalDbSession(context.Background(), func(sess *sqlstore.DBSession) error {
+		err = sl.SQLStore.WithTransactionalDbSession(context.Background(), func(sess *db.Session) error {
 			lockRows := []*serverLock{}
 			err := sess.Where("operation_uid = ?", operationUID).Find(&lockRows)
 			require.NoError(t, err)

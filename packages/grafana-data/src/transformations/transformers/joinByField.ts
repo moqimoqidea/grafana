@@ -1,6 +1,7 @@
 import { map } from 'rxjs/operators';
 
-import { DataFrame, SynchronousDataTransformerInfo, FieldMatcher } from '../../types';
+import { DataFrame } from '../../types/dataFrame';
+import { DataTransformContext, FieldMatcher, SynchronousDataTransformerInfo } from '../../types/transformations';
 import { fieldMatchers } from '../matchers';
 import { FieldMatcherID } from '../matchers/ids';
 
@@ -8,8 +9,9 @@ import { DataTransformerID } from './ids';
 import { joinDataFrames } from './joinDataFrames';
 
 export enum JoinMode {
-  outer = 'outer',
+  outer = 'outer', // best for time series, non duplicated join on values
   inner = 'inner',
+  outerTabular = 'outerTabular', // best for tabular data where the join on value can be duplicated
 }
 
 export interface JoinByFieldOptions {
@@ -28,9 +30,10 @@ export const joinByFieldTransformer: SynchronousDataTransformerInfo<JoinByFieldO
     mode: JoinMode.outer,
   },
 
-  operator: (options) => (source) => source.pipe(map((data) => joinByFieldTransformer.transformer(options)(data))),
+  operator: (options, ctx) => (source) =>
+    source.pipe(map((data) => joinByFieldTransformer.transformer(options, ctx)(data))),
 
-  transformer: (options: JoinByFieldOptions) => {
+  transformer: (options: JoinByFieldOptions, ctx: DataTransformContext) => {
     let joinBy: FieldMatcher | undefined = undefined;
     return (data: DataFrame[]) => {
       if (data.length > 1) {
@@ -39,6 +42,7 @@ export const joinByFieldTransformer: SynchronousDataTransformerInfo<JoinByFieldO
         }
         const joined = joinDataFrames({ frames: data, joinBy, mode: options.mode });
         if (joined) {
+          joined.refId = `${DataTransformerID.joinByField}-${data.map((frame) => frame.refId).join('-')}`;
           return [joined];
         }
       }

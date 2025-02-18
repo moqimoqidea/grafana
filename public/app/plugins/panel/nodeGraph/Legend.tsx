@@ -1,25 +1,24 @@
 import { css } from '@emotion/css';
-import { identity } from 'lodash';
-import React, { useCallback } from 'react';
+import { useCallback } from 'react';
 
-import { Field, FieldColorModeId, GrafanaTheme } from '@grafana/data';
+import { Field, FieldColorModeId, GrafanaTheme2 } from '@grafana/data';
 import { LegendDisplayMode } from '@grafana/schema';
-import { Icon, useStyles, useTheme, VizLegend, VizLegendItem, VizLegendListItem } from '@grafana/ui';
+import { Icon, useStyles2, useTheme2, VizLegend, VizLegendItem, VizLegendListItem } from '@grafana/ui';
 
 import { Config } from './layout';
 import { NodeDatum } from './types';
 
 function getStyles() {
   return {
-    item: css`
-      label: LegendItem;
-      flex-grow: 0;
-    `,
+    item: css({
+      label: 'LegendItem',
+      flexGrow: 0,
+    }),
 
-    legend: css`
-      label: Legend;
-      pointer-events: all;
-    `,
+    legend: css({
+      label: 'Legend',
+      pointerEvents: 'all',
+    }),
   };
 }
 
@@ -33,12 +32,12 @@ interface Props {
 export const Legend = function Legend(props: Props) {
   const { nodes, onSort, sort, sortable } = props;
 
-  const theme = useTheme();
-  const styles = useStyles(getStyles);
+  const theme = useTheme2();
+  const styles = useStyles2(getStyles);
   const colorItems = getColorLegendItems(nodes, theme);
 
   const onClick = useCallback(
-    (item) => {
+    (item: VizLegendItem<ItemData>) => {
       onSort({
         field: item.data!.field,
         ascending: item.data!.field === sort?.field ? !sort?.ascending : false,
@@ -70,11 +69,13 @@ interface ItemData {
   field: Field;
 }
 
-function getColorLegendItems(nodes: NodeDatum[], theme: GrafanaTheme): Array<VizLegendItem<ItemData>> {
+function getColorLegendItems(nodes: NodeDatum[], theme: GrafanaTheme2): Array<VizLegendItem<ItemData>> {
   if (!nodes.length) {
     return [];
   }
-  const fields = [nodes[0].mainStat, nodes[0].secondaryStat].filter(identity) as Field[];
+  const fields = [nodes[0].mainStat, nodes[0].secondaryStat].filter((item): item is NonNullable<typeof item> =>
+    Boolean(item)
+  );
 
   const node = nodes.find((n) => n.arcSections.length > 0);
   if (node) {

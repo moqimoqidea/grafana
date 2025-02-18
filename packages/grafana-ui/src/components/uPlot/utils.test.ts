@@ -1,31 +1,15 @@
-import Units from 'ol/proj/Units';
-
 import { FieldMatcherID, fieldMatchers, FieldType, MutableDataFrame } from '@grafana/data';
 import { BarAlignment, GraphDrawStyle, GraphTransform, LineInterpolation, StackingMode } from '@grafana/schema';
 
-import { preparePlotFrame } from '../GraphNG/utils';
+import { preparePlotFrame } from '..';
 
-import { getStackingGroups, preparePlotData2, timeFormatToTemplate } from './utils';
-
-describe('timeFormatToTemplate', () => {
-  it.each`
-    format           | expected
-    ${'HH:mm:ss'}    | ${'{HH}:{mm}:{ss}'}
-    ${'HH:mm'}       | ${'{HH}:{mm}'}
-    ${'MM/DD HH:mm'} | ${'{MM}/{DD} {HH}:{mm}'}
-    ${'MM/DD'}       | ${'{MM}/{DD}'}
-    ${'YYYY-MM'}     | ${'{YYYY}-{MM}'}
-    ${'YYYY'}        | ${'{YYYY}'}
-  `('should convert $format to $expected', ({ format, expected }) => {
-    expect(timeFormatToTemplate(format)).toEqual(expected);
-  });
-});
+import { getStackingGroups, preparePlotData2 } from './utils';
 
 describe('preparePlotData2', () => {
   const df = new MutableDataFrame({
     fields: [
       { name: 'time', type: FieldType.time, values: [9997, 9998, 9999] },
-      { name: 'a', values: [-10, 20, 10] },
+      { name: 'a', values: [-10, -20, 10] },
       { name: 'b', values: [10, 10, 10] },
       { name: 'c', values: [20, 20, 20] },
     ],
@@ -33,23 +17,23 @@ describe('preparePlotData2', () => {
 
   it('creates array from DataFrame', () => {
     expect(preparePlotData2(df, getStackingGroups(df))).toMatchInlineSnapshot(`
-      Array [
-        Array [
+      [
+        [
           9997,
           9998,
           9999,
         ],
-        Array [
+        [
           -10,
-          20,
+          -20,
           10,
         ],
-        Array [
+        [
           10,
           10,
           10,
         ],
-        Array [
+        [
           20,
           20,
           20,
@@ -63,29 +47,29 @@ describe('preparePlotData2', () => {
       const df = new MutableDataFrame({
         fields: [
           { name: 'time', type: FieldType.time, values: [9997, 9998, 9999] },
-          { name: 'a', values: [-10, 20, 10] },
+          { name: 'a', values: [-10, -20, 10] },
           { name: 'b', values: [10, 10, 10] },
           { name: 'c', values: [20, 20, 20], config: { custom: { transform: GraphTransform.NegativeY } } },
         ],
       });
       expect(preparePlotData2(df, getStackingGroups(df))).toMatchInlineSnapshot(`
-        Array [
-          Array [
+        [
+          [
             9997,
             9998,
             9999,
           ],
-          Array [
+          [
             -10,
-            20,
+            -20,
             10,
           ],
-          Array [
+          [
             10,
             10,
             10,
           ],
-          Array [
+          [
             -20,
             -20,
             -20,
@@ -98,7 +82,7 @@ describe('preparePlotData2', () => {
       const df = new MutableDataFrame({
         fields: [
           { name: 'time', type: FieldType.time, values: [9997, 9998, 9999] },
-          { name: 'a', values: [-10, 20, 10, 30] },
+          { name: 'a', values: [-10, -20, 10, -30] },
           { name: 'b', values: [10, 10, 10, null] },
           { name: 'c', values: [null, 20, 20, 20], config: { custom: { transform: GraphTransform.NegativeY } } },
           { name: 'd', values: [20, 20, 20, null], config: { custom: { transform: GraphTransform.NegativeY } } },
@@ -110,62 +94,62 @@ describe('preparePlotData2', () => {
         ],
       });
       expect(preparePlotData2(df, getStackingGroups(df))).toMatchInlineSnapshot(`
-        Array [
-          Array [
+        [
+          [
             9997,
             9998,
             9999,
             undefined,
           ],
-          Array [
+          [
             -10,
-            20,
+            -20,
             10,
-            30,
+            -30,
           ],
-          Array [
+          [
             10,
             10,
             10,
             null,
           ],
-          Array [
+          [
             null,
             -20,
             -20,
             -20,
           ],
-          Array [
+          [
             -20,
             -20,
             -20,
             null,
           ],
-          Array [
+          [
             -20,
             null,
             -20,
             -20,
           ],
-          Array [
+          [
             10,
             10,
             10,
             undefined,
           ],
-          Array [
+          [
             undefined,
             -20,
             -20,
             -20,
           ],
-          Array [
+          [
             -20,
             -20,
             -20,
             undefined,
           ],
-          Array [
+          [
             -20,
             undefined,
             -20,
@@ -178,29 +162,29 @@ describe('preparePlotData2', () => {
       const df = new MutableDataFrame({
         fields: [
           { name: 'time', type: FieldType.time, values: [9997, 9998, 9999] },
-          { name: 'a', values: [-10, 20, 10], config: { custom: { transform: GraphTransform.Constant } } },
+          { name: 'a', values: [-10, -20, 10], config: { custom: { transform: GraphTransform.Constant } } },
           { name: 'b', values: [10, 10, 10] },
           { name: 'c', values: [20, 20, 20] },
         ],
       });
       expect(preparePlotData2(df, getStackingGroups(df))).toMatchInlineSnapshot(`
-        Array [
-          Array [
+        [
+          [
             9997,
             9998,
             9999,
           ],
-          Array [
+          [
             -10,
             undefined,
             undefined,
           ],
-          Array [
+          [
             10,
             10,
             10,
           ],
-          Array [
+          [
             20,
             20,
             20,
@@ -216,7 +200,7 @@ describe('preparePlotData2', () => {
           { name: 'time', type: FieldType.time, values: [9997, 9998, 9999] },
           {
             name: 'a',
-            values: [-10, 20, 10],
+            values: [-10, -20, 10],
             config: { custom: { stacking: { mode: StackingMode.None } } },
           },
           {
@@ -232,23 +216,23 @@ describe('preparePlotData2', () => {
         ],
       });
       expect(preparePlotData2(df, getStackingGroups(df))).toMatchInlineSnapshot(`
-        Array [
-          Array [
+        [
+          [
             9997,
             9998,
             9999,
           ],
-          Array [
+          [
             -10,
-            20,
+            -20,
             10,
           ],
-          Array [
+          [
             10,
             10,
             10,
           ],
-          Array [
+          [
             20,
             20,
             20,
@@ -263,7 +247,7 @@ describe('preparePlotData2', () => {
           { name: 'time', type: FieldType.time, values: [9997, 9998, 9999] },
           {
             name: 'a',
-            values: [-10, 20, 10],
+            values: [-10, -20, 10],
             config: { custom: { stacking: { mode: StackingMode.Normal, group: 'stackA' } } },
           },
           {
@@ -279,23 +263,23 @@ describe('preparePlotData2', () => {
         ],
       });
       expect(preparePlotData2(df, getStackingGroups(df))).toMatchInlineSnapshot(`
-        Array [
-          Array [
+        [
+          [
             9997,
             9998,
             9999,
           ],
-          Array [
+          [
             -10,
-            20,
+            -20,
             10,
           ],
-          Array [
+          [
             10,
             10,
             10,
           ],
-          Array [
+          [
             30,
             30,
             30,
@@ -310,7 +294,7 @@ describe('preparePlotData2', () => {
           { name: 'time', type: FieldType.time, values: [9997, 9998, 9999] },
           {
             name: 'a',
-            values: [-10, 20, 10],
+            values: [-10, -20, 10],
             config: { custom: { stacking: { mode: StackingMode.Normal, group: 'stackA' } } },
           },
           {
@@ -335,30 +319,30 @@ describe('preparePlotData2', () => {
         ],
       });
       expect(preparePlotData2(df, getStackingGroups(df))).toMatchInlineSnapshot(`
-        Array [
-          Array [
+        [
+          [
             9997,
             9998,
             9999,
           ],
-          Array [
+          [
             -10,
-            20,
+            -20,
             10,
           ],
-          Array [
+          [
             10,
             10,
             10,
           ],
-          Array [
+          [
             -30,
-            0,
-            -10,
-          ],
-          Array [
             -40,
             -10,
+          ],
+          [
+            -40,
+            -50,
             -20,
           ],
         ]
@@ -371,7 +355,7 @@ describe('preparePlotData2', () => {
           { name: 'time', type: FieldType.time, values: [9997, 9998, 9999] },
           {
             name: 'a',
-            values: [-10, 20, 10],
+            values: [-10, -20, 10],
             config: { custom: { stacking: { mode: StackingMode.Normal, group: 'stackA' } } },
           },
           {
@@ -403,38 +387,38 @@ describe('preparePlotData2', () => {
       });
 
       expect(preparePlotData2(df, getStackingGroups(df))).toMatchInlineSnapshot(`
-        Array [
-          Array [
+        [
+          [
             9997,
             9998,
             9999,
           ],
-          Array [
+          [
             -10,
-            20,
+            -20,
             10,
           ],
-          Array [
+          [
             10,
             10,
             10,
           ],
-          Array [
+          [
             30,
             30,
             30,
           ],
-          Array [
+          [
             1,
             2,
             3,
           ],
-          Array [
+          [
             2,
             4,
             6,
           ],
-          Array [
+          [
             3,
             6,
             9,
@@ -449,7 +433,7 @@ describe('preparePlotData2', () => {
           { name: 'time', type: FieldType.time, values: [9997, 9998, 9999] },
           {
             name: 'a',
-            values: [-10, 20, 10],
+            values: [-10, -20, 10],
             config: { custom: { stacking: { mode: StackingMode.Normal, group: 'stackA' }, hideFrom: { viz: true } } },
           },
           {
@@ -478,33 +462,33 @@ describe('preparePlotData2', () => {
       });
 
       expect(preparePlotData2(df, getStackingGroups(df))).toMatchInlineSnapshot(`
-        Array [
-          Array [
+        [
+          [
             9997,
             9998,
             9999,
           ],
-          Array [
+          [
             -10,
-            20,
+            -20,
             10,
           ],
-          Array [
+          [
             10,
             10,
             10,
           ],
-          Array [
+          [
             1,
             2,
             3,
           ],
-          Array [
+          [
             1,
             2,
             3,
           ],
-          Array [
+          [
             2,
             4,
             6,
@@ -617,8 +601,8 @@ describe('preparePlotData2', () => {
     })!;
 
     expect(preparePlotData2(df, getStackingGroups(df))).toMatchInlineSnapshot(`
-      Array [
-        Array [
+      [
+        [
           1639455966000,
           1639629625944,
           1639803285888,
@@ -638,7 +622,7 @@ describe('preparePlotData2', () => {
           1642234525104,
           1642408185048,
         ],
-        Array [
+        [
           0,
           0,
           0,
@@ -658,7 +642,7 @@ describe('preparePlotData2', () => {
           0,
           0,
         ],
-        Array [
+        [
           0,
           0,
           2500,
@@ -678,7 +662,7 @@ describe('preparePlotData2', () => {
           0,
           0,
         ],
-        Array [
+        [
           0,
           0,
           30500,
@@ -698,7 +682,7 @@ describe('preparePlotData2', () => {
           0,
           0,
         ],
-        Array [
+        [
           0,
           0,
           30500,
@@ -718,7 +702,7 @@ describe('preparePlotData2', () => {
           0,
           0,
         ],
-        Array [
+        [
           0,
           0,
           35500,
@@ -738,7 +722,7 @@ describe('preparePlotData2', () => {
           0,
           0,
         ],
-        Array [
+        [
           122,
           123,
           47845,
@@ -758,7 +742,7 @@ describe('preparePlotData2', () => {
           0,
           0,
         ],
-        Array [
+        [
           122,
           123,
           47845,
@@ -778,7 +762,7 @@ describe('preparePlotData2', () => {
           0,
           0,
         ],
-        Array [
+        [
           122,
           123,
           47845,
@@ -798,7 +782,7 @@ describe('preparePlotData2', () => {
           0,
           0,
         ],
-        Array [
+        [
           122,
           123,
           47845,
@@ -818,7 +802,7 @@ describe('preparePlotData2', () => {
           0,
           0,
         ],
-        Array [
+        [
           122,
           123,
           48095,
@@ -838,7 +822,7 @@ describe('preparePlotData2', () => {
           0,
           0,
         ],
-        Array [
+        [
           122,
           123,
           48095,
@@ -858,7 +842,7 @@ describe('preparePlotData2', () => {
           1520,
           665.35,
         ],
-        Array [
+        [
           122,
           123,
           48095,
@@ -878,7 +862,7 @@ describe('preparePlotData2', () => {
           1520,
           665.35,
         ],
-        Array [
+        [
           122,
           123,
           48095,
@@ -898,7 +882,7 @@ describe('preparePlotData2', () => {
           5120,
           665.35,
         ],
-        Array [
+        [
           122,
           123,
           48095,
@@ -918,7 +902,7 @@ describe('preparePlotData2', () => {
           6795,
           665.35,
         ],
-        Array [
+        [
           122,
           123,
           48095,
@@ -938,7 +922,7 @@ describe('preparePlotData2', () => {
           6795,
           665.35,
         ],
-        Array [
+        [
           122,
           123,
           48095,
@@ -958,7 +942,7 @@ describe('preparePlotData2', () => {
           62118.84,
           14496.31,
         ],
-        Array [
+        [
           122,
           123,
           48095,
@@ -978,7 +962,7 @@ describe('preparePlotData2', () => {
           62118.84,
           14496.31,
         ],
-        Array [
+        [
           122,
           123,
           48095,
@@ -1022,16 +1006,16 @@ describe('auto stacking groups', () => {
     });
 
     expect(getStackingGroups(df)).toMatchInlineSnapshot(`
-      Array [
-        Object {
+      [
+        {
           "dir": 1,
-          "series": Array [
+          "series": [
             1,
           ],
         },
-        Object {
+        {
           "dir": 1,
-          "series": Array [
+          "series": [
             2,
           ],
         },
@@ -1061,20 +1045,26 @@ describe('auto stacking groups', () => {
           values: [0, 0, 0],
           config: { custom: { stacking: { mode: StackingMode.Normal } } },
         },
+        {
+          name: 'd',
+          values: [null, -0, null],
+          config: { custom: { stacking: { mode: StackingMode.Normal } } },
+        },
       ],
     });
 
     expect(getStackingGroups(df)).toMatchInlineSnapshot(`
-      Array [
-        Object {
+      [
+        {
           "dir": -1,
-          "series": Array [
+          "series": [
             1,
+            4,
           ],
         },
-        Object {
+        {
           "dir": 1,
-          "series": Array [
+          "series": [
             2,
             3,
           ],
@@ -1102,17 +1092,23 @@ describe('auto stacking groups', () => {
           values: [0, 0, 0],
           config: { custom: { stacking: { mode: StackingMode.Normal } } },
         },
+        {
+          name: 'd',
+          values: [-0, null, -3],
+          config: { custom: { stacking: { mode: StackingMode.Normal }, transform: GraphTransform.NegativeY } },
+        },
       ],
     });
 
     expect(getStackingGroups(df)).toMatchInlineSnapshot(`
-      Array [
-        Object {
+      [
+        {
           "dir": 1,
-          "series": Array [
+          "series": [
             1,
             2,
             3,
+            4,
           ],
         },
       ]
@@ -1176,34 +1172,34 @@ describe('auto stacking groups', () => {
     });
 
     expect(getStackingGroups(df)).toMatchInlineSnapshot(`
-      Array [
-        Object {
+      [
+        {
           "dir": 1,
-          "series": Array [
+          "series": [
             1,
           ],
         },
-        Object {
+        {
           "dir": 1,
-          "series": Array [
+          "series": [
             2,
           ],
         },
-        Object {
+        {
           "dir": 1,
-          "series": Array [
+          "series": [
             3,
           ],
         },
-        Object {
+        {
           "dir": 1,
-          "series": Array [
+          "series": [
             4,
           ],
         },
-        Object {
+        {
           "dir": 1,
-          "series": Array [
+          "series": [
             5,
           ],
         },
@@ -1218,27 +1214,27 @@ describe('auto stacking groups', () => {
         {
           name: 'a',
           values: [1, 2, 3],
-          config: { custom: { stacking: { mode: StackingMode.Normal } }, unit: Units.FEET },
+          config: { custom: { stacking: { mode: StackingMode.Normal } }, unit: 'ft' },
         },
         {
           name: 'b',
           values: [1, 2, 3],
-          config: { custom: { stacking: { mode: StackingMode.Normal } }, unit: Units.DEGREES },
+          config: { custom: { stacking: { mode: StackingMode.Normal } }, unit: 'degrees' },
         },
       ],
     });
 
     expect(getStackingGroups(df)).toMatchInlineSnapshot(`
-      Array [
-        Object {
+      [
+        {
           "dir": 1,
-          "series": Array [
+          "series": [
             1,
           ],
         },
-        Object {
+        {
           "dir": 1,
-          "series": Array [
+          "series": [
             2,
           ],
         },
@@ -1286,35 +1282,35 @@ describe('auto stacking groups', () => {
     });
 
     expect(getStackingGroups(df)).toMatchInlineSnapshot(`
-      Array [
-        Object {
+      [
+        {
           "dir": 1,
-          "series": Array [
+          "series": [
             1,
             2,
           ],
         },
-        Object {
+        {
           "dir": 1,
-          "series": Array [
+          "series": [
             3,
           ],
         },
-        Object {
+        {
           "dir": 1,
-          "series": Array [
+          "series": [
             4,
           ],
         },
-        Object {
+        {
           "dir": 1,
-          "series": Array [
+          "series": [
             5,
           ],
         },
-        Object {
+        {
           "dir": -1,
-          "series": Array [
+          "series": [
             6,
           ],
         },

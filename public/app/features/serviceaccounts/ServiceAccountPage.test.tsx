@@ -1,6 +1,6 @@
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import React from 'react';
+import { TestProvider } from 'test/helpers/TestProvider';
 
 import { ApiKey, OrgRole, ServiceAccountDTO } from 'app/types';
 
@@ -10,9 +10,13 @@ jest.mock('app/core/core', () => ({
   contextSrv: {
     licensedAccessControlEnabled: () => false,
     hasPermission: () => true,
-    hasPermissionInMetadata: () => true,
-    hasAccessInMetadata: () => false,
+    hasPermissionInMetadata: () => false,
   },
+}));
+
+jest.mock('react-router-dom-v5-compat', () => ({
+  ...jest.requireActual('react-router-dom-v5-compat'),
+  useParams: () => ({ id: '1' }),
 }));
 
 const setup = (propOverrides: Partial<Props>) => {
@@ -27,17 +31,6 @@ const setup = (propOverrides: Partial<Props>) => {
     serviceAccount: {} as ServiceAccountDTO,
     tokens: [],
     isLoading: false,
-    roleOptions: [],
-    match: {
-      params: { id: '1' },
-      isExact: true,
-      path: '/org/serviceaccounts/1',
-      url: 'http://localhost:3000/org/serviceaccounts/1',
-    },
-    history: {} as any,
-    location: {} as any,
-    queryParams: {},
-    route: {} as any,
     timezone: '',
     createServiceAccountToken: createServiceAccountTokenMock,
     deleteServiceAccount: deleteServiceAccountMock,
@@ -49,7 +42,11 @@ const setup = (propOverrides: Partial<Props>) => {
 
   Object.assign(props, propOverrides);
 
-  const { rerender } = render(<ServiceAccountPageUnconnected {...props} />);
+  const { rerender } = render(
+    <TestProvider>
+      <ServiceAccountPageUnconnected {...props} />
+    </TestProvider>
+  );
   return {
     rerender,
     props,
@@ -64,6 +61,7 @@ const setup = (propOverrides: Partial<Props>) => {
 
 const getDefaultServiceAccount = (): ServiceAccountDTO => ({
   id: 42,
+  uid: 'aaaaa',
   name: 'Data source scavenger',
   login: 'sa-data-source-scavenger',
   orgId: 1,
@@ -167,6 +165,6 @@ describe('ServiceAccountPage tests', () => {
     await userEvent.click(screen.getByLabelText(/Delete service account token/));
     await user.click(screen.getByRole('button', { name: /^Delete$/ }));
 
-    expect(deleteServiceAccountTokenMock).toHaveBeenCalledWith(42, 142);
+    expect(deleteServiceAccountTokenMock).toHaveBeenCalledWith('aaaaa', 142);
   });
 });

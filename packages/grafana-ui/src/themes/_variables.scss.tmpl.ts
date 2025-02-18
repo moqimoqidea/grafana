@@ -101,6 +101,8 @@ $font-family-sans-serif: ${theme.typography.fontFamily};
 /* stylelint-disable-next-line string-quotes */
 $font-family-monospace: ${theme.typography.fontFamilyMonospace};
 
+$font-file-path: '../fonts' !default;
+
 $font-size-base: ${theme.typography.fontSize}px !default;
 
 $font-size-lg: ${theme.typography.size.lg} !default;
@@ -128,9 +130,9 @@ $headings-line-height: ${theme.typography.bodySmall.lineHeight} !default;
 
 $border-width: 1px !default;
 
-$border-radius: ${theme.shape.borderRadius(1)} !default;
+$border-radius: ${theme.shape.radius.default} !default;
 $border-radius-lg: ${theme.shape.borderRadius(3)} !default;
-$border-radius-sm: ${theme.shape.borderRadius(1)} !default;
+$border-radius-sm: ${theme.shape.radius.default} !default;
 
 // Page
 

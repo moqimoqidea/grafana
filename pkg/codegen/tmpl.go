@@ -2,8 +2,11 @@ package codegen
 
 import (
 	"embed"
+	"strings"
 	"text/template"
 	"time"
+
+	"github.com/grafana/codejen"
 )
 
 // All the parsed templates in the tmpl subdirectory
@@ -11,7 +14,8 @@ var tmpls *template.Template
 
 func init() {
 	base := template.New("codegen").Funcs(template.FuncMap{
-		"now": time.Now,
+		"now":     time.Now,
+		"ToLower": strings.ToLower,
 	})
 	tmpls = template.Must(base.ParseFS(tmplFS, "tmpl/*.tmpl"))
 }
@@ -22,44 +26,33 @@ var tmplFS embed.FS
 // The following group of types, beginning with tvars_*, all contain the set
 // of variables expected by the corresponding named template file under tmpl/
 type (
-	tvars_autogen_header struct {
-		GeneratorPath  string
-		LineagePath    string
-		LineageCUEPath string
-		GenLicense     bool
+	tvars_gen_header struct {
+		MainGenerator string
+		Using         []codejen.NamedJenny
+		From          string
+		Leader        string
 	}
-	tvars_coremodel_registry struct {
-		Header     tvars_autogen_header
-		Coremodels []tplVars
+
+	tvars_resource struct {
+		PackageName string
+		KindName    string
+		Version     string
 	}
-	tvars_coremodel_imports struct {
+
+	tvars_metadata struct {
 		PackageName string
 	}
-	tvars_plugin_lineage_binding struct {
-		SlotName               string
-		LatestMajv, LatestMinv uint
-	}
-	tvars_plugin_lineage_file struct {
+
+	tvars_status struct {
 		PackageName string
-		PluginID    string
-		PluginType  string
-		HasModels   bool
-		RootCUE     bool
-		SlotImpls   []tvars_plugin_lineage_binding
-		Header      tvars_autogen_header
 	}
-	tvars_cuetsy_multi struct {
-		Header   tvars_autogen_header
-		Imports  []*tsImport
-		Sections []tsSection
+
+	tvars_registry struct {
+		Schemas []Schema
 	}
-	tvars_plugin_registry struct {
-		Header  tvars_autogen_header
-		Plugins []struct {
-			PkgName    string
-			Path       string
-			ImportPath string
-			NoAlias    bool
-		}
+
+	Schema struct {
+		Name     string
+		FilePath string
 	}
 )

@@ -13,13 +13,19 @@ import (
 	"sync"
 	"time"
 
-	"github.com/grafana/grafana/pkg/infra/log"
-	"github.com/grafana/grafana/pkg/services/searchV2/dslookup"
-	"github.com/grafana/grafana/pkg/services/searchV2/extract"
-	"github.com/grafana/grafana/pkg/services/sqlstore"
-	"github.com/grafana/grafana/pkg/services/store"
-
 	"github.com/blugelabs/bluge"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
+
+	"github.com/grafana/grafana/pkg/infra/db"
+	"github.com/grafana/grafana/pkg/infra/log"
+	"github.com/grafana/grafana/pkg/infra/tracing"
+	"github.com/grafana/grafana/pkg/services/featuremgmt"
+	"github.com/grafana/grafana/pkg/services/folder"
+	"github.com/grafana/grafana/pkg/services/store"
+	"github.com/grafana/grafana/pkg/services/store/entity"
+	kdash "github.com/grafana/grafana/pkg/services/store/kind/dashboard"
+	"github.com/grafana/grafana/pkg/setting"
 )
 
 type dashboardLoader interface {
@@ -36,19 +42,18 @@ type eventStore interface {
 	GetAllEventsAfter(ctx context.Context, id int64) ([]*store.EntityEvent, error)
 }
 
-// While we migrate away from internal IDs... this lets us lookup values in SQL
-// NOTE: folderId is unique across all orgs
-type folderUIDLookup = func(ctx context.Context, folderId int64) (string, error)
-
 type dashboard struct {
-	id       int64
-	uid      string
-	isFolder bool
-	folderID int64
-	slug     string
-	created  time.Time
-	updated  time.Time
-	info     *extract.DashboardInfo
+	id        int64
+	uid       string
+	isFolder  bool
+	folderID  int64
+	folderUID string
+	slug      string
+	created   time.Time
+	updated   time.Time
+
+	// Use generic structure
+	summary *entity.EntitySummary
 }
 
 // buildSignal is sent when search index is accessed in organization for which
@@ -91,11 +96,13 @@ type searchIndex struct {
 	logger                  log.Logger
 	buildSignals            chan buildSignal
 	extender                DocumentExtender
-	folderIdLookup          folderUIDLookup
 	syncCh                  chan chan struct{}
+	tracer                  tracing.Tracer
+	features                featuremgmt.FeatureToggles
+	settings                setting.SearchSettings
 }
 
-func newSearchIndex(dashLoader dashboardLoader, evStore eventStore, extender DocumentExtender, folderIDs folderUIDLookup) *searchIndex {
+func newSearchIndex(dashLoader dashboardLoader, evStore eventStore, extender DocumentExtender, tracer tracing.Tracer, features featuremgmt.FeatureToggles, settings setting.SearchSettings) *searchIndex {
 	return &searchIndex{
 		loader:          dashLoader,
 		eventStore:      evStore,
@@ -104,8 +111,10 @@ func newSearchIndex(dashLoader dashboardLoader, evStore eventStore, extender Doc
 		logger:          log.New("searchIndex"),
 		buildSignals:    make(chan buildSignal),
 		extender:        extender,
-		folderIdLookup:  folderIDs,
 		syncCh:          make(chan chan struct{}),
+		tracer:          tracer,
+		features:        features,
+		settings:        settings,
 	}
 }
 
@@ -169,25 +178,30 @@ func (i *searchIndex) sync(ctx context.Context) error {
 }
 
 func (i *searchIndex) run(ctx context.Context, orgIDs []int64, reIndexSignalCh chan struct{}) error {
-	reIndexInterval := 5 * time.Minute
+	i.logger.Info("Initializing SearchV2", "dashboardLoadingBatchSize", i.settings.DashboardLoadingBatchSize, "fullReindexInterval", i.settings.FullReindexInterval, "indexUpdateInterval", i.settings.IndexUpdateInterval)
+	initialSetupCtx, initialSetupSpan := i.tracer.Start(ctx, "searchV2 initialSetup")
+
+	reIndexInterval := i.settings.FullReindexInterval
 	fullReIndexTimer := time.NewTimer(reIndexInterval)
 	defer fullReIndexTimer.Stop()
 
-	partialUpdateInterval := 5 * time.Second
+	partialUpdateInterval := i.settings.IndexUpdateInterval
 	partialUpdateTimer := time.NewTimer(partialUpdateInterval)
 	defer partialUpdateTimer.Stop()
 
 	var lastEventID int64
-	lastEvent, err := i.eventStore.GetLastEvent(ctx)
+	lastEvent, err := i.eventStore.GetLastEvent(initialSetupCtx)
 	if err != nil {
+		initialSetupSpan.End()
 		return err
 	}
 	if lastEvent != nil {
 		lastEventID = lastEvent.Id
 	}
 
-	err = i.buildInitialIndexes(ctx, orgIDs)
+	err = i.buildInitialIndexes(initialSetupCtx, orgIDs)
 	if err != nil {
+		initialSetupSpan.End()
 		return err
 	}
 
@@ -201,6 +215,8 @@ func (i *searchIndex) run(ctx context.Context, orgIDs []int64, reIndexSignalCh c
 	i.initialIndexingComplete = true
 	i.initializationMutex.Unlock()
 
+	initialSetupSpan.End()
+
 	for {
 		select {
 		case doneCh := <-i.syncCh:
@@ -209,17 +225,22 @@ func (i *searchIndex) run(ctx context.Context, orgIDs []int64, reIndexSignalCh c
 			close(doneCh)
 		case <-partialUpdateTimer.C:
 			// Periodically apply updates collected in entity events table.
-			lastEventID = i.applyIndexUpdates(ctx, lastEventID)
+			partialIndexUpdateCtx, span := i.tracer.Start(ctx, "searchV2 partial update timer")
+			lastEventID = i.applyIndexUpdates(partialIndexUpdateCtx, lastEventID)
+			span.End()
 			partialUpdateTimer.Reset(partialUpdateInterval)
 		case <-reIndexSignalCh:
 			// External systems may trigger re-indexing, at this moment provisioning does this.
 			i.logger.Info("Full re-indexing due to external signal")
 			fullReIndexTimer.Reset(0)
 		case signal := <-i.buildSignals:
+			buildSignalCtx, span := i.tracer.Start(ctx, "searchV2 build signal")
+
 			// When search read request meets new not-indexed org we build index for it.
 			i.mu.RLock()
 			_, ok := i.perOrgIndex[signal.orgID]
 			if ok {
+				span.End()
 				// Index for org already exists, do nothing.
 				i.mu.RUnlock()
 				close(signal.done)
@@ -232,14 +253,17 @@ func (i *searchIndex) run(ctx context.Context, orgIDs []int64, reIndexSignalCh c
 			// branch.
 			fullReIndexTimer.Stop()
 			go func() {
+				defer span.End()
 				// We need semaphore here since asynchronous re-indexing may be in progress already.
 				asyncReIndexSemaphore <- struct{}{}
 				defer func() { <-asyncReIndexSemaphore }()
-				_, err = i.buildOrgIndex(ctx, signal.orgID)
+				_, err = i.buildOrgIndex(buildSignalCtx, signal.orgID)
 				signal.done <- err
 				reIndexDoneCh <- lastIndexedEventID
 			}()
 		case <-fullReIndexTimer.C:
+			fullReindexCtx, span := i.tracer.Start(ctx, "searchV2 full reindex timer")
+
 			// Periodically rebuild indexes since we could miss updates. At this moment we are issuing
 			// entity events non-atomically (outside of transaction) and do not cover all possible dashboard
 			// change places, so periodic re-indexing fixes possibly broken state. But ideally we should
@@ -247,6 +271,7 @@ func (i *searchIndex) run(ctx context.Context, orgIDs []int64, reIndexSignalCh c
 			// is to use DB triggers, see https://github.com/grafana/grafana/pull/47712.
 			lastIndexedEventID := lastEventID
 			go func() {
+				defer span.End()
 				// Do full re-index asynchronously to avoid blocking index synchronization
 				// on read for a long time.
 
@@ -255,9 +280,9 @@ func (i *searchIndex) run(ctx context.Context, orgIDs []int64, reIndexSignalCh c
 				defer func() { <-asyncReIndexSemaphore }()
 
 				started := time.Now()
-				i.logger.Info("Start re-indexing")
-				i.reIndexFromScratch(ctx)
-				i.logger.Info("Full re-indexing finished", "fullReIndexElapsed", time.Since(started))
+				i.logger.Info("Start re-indexing", i.withCtxData(fullReindexCtx)...)
+				i.reIndexFromScratch(fullReindexCtx)
+				i.logger.Info("Full re-indexing finished", i.withCtxData(fullReindexCtx, "fullReIndexElapsed", time.Since(started))...)
 				reIndexDoneCh <- lastIndexedEventID
 			}()
 		case lastIndexedEventID := <-reIndexDoneCh:
@@ -409,13 +434,13 @@ func (i *searchIndex) reportSizeOfIndexDiskBackup(orgID int64) {
 	// create a temp directory to store the index
 	tmpDir, err := os.MkdirTemp("", "grafana.dashboard_index")
 	if err != nil {
-		i.logger.Error("can't create temp dir", "error", err)
+		i.logger.Error("Can't create temp dir", "error", err)
 		return
 	}
 	defer func() {
 		err := os.RemoveAll(tmpDir)
 		if err != nil {
-			i.logger.Error("can't remove temp dir", "error", err, "tmpDir", tmpDir)
+			i.logger.Error("Can't remove temp dir", "error", err, "tmpDir", tmpDir)
 			return
 		}
 	}()
@@ -423,13 +448,13 @@ func (i *searchIndex) reportSizeOfIndexDiskBackup(orgID int64) {
 	cancelCh := make(chan struct{})
 	err = reader.Backup(tmpDir, cancelCh)
 	if err != nil {
-		i.logger.Error("can't create index disk backup", "error", err)
+		i.logger.Error("Can't create index disk backup", "error", err)
 		return
 	}
 
 	size, err := dirSize(tmpDir)
 	if err != nil {
-		i.logger.Error("can't calculate dir size", "error", err)
+		i.logger.Error("Can't calculate dir size", "error", err)
 		return
 	}
 
@@ -437,20 +462,39 @@ func (i *searchIndex) reportSizeOfIndexDiskBackup(orgID int64) {
 }
 
 func (i *searchIndex) buildOrgIndex(ctx context.Context, orgID int64) (int, error) {
+	spanCtx, span := i.tracer.Start(ctx, "searchV2 buildOrgIndex", trace.WithAttributes(
+		attribute.Int64("org_id", orgID),
+	))
+
 	started := time.Now()
-	ctx, cancel := context.WithTimeout(ctx, time.Minute)
-	defer cancel()
+	ctx, cancel := context.WithTimeout(spanCtx, time.Minute)
+	ctx = log.InitCounter(ctx)
+
+	defer func() {
+		span.End()
+		cancel()
+	}()
 
 	i.logger.Info("Start building org index", "orgId", orgID)
 	dashboards, err := i.loader.LoadDashboards(ctx, orgID, "")
-	if err != nil {
-		return 0, fmt.Errorf("error loading dashboards: %w", err)
-	}
 	orgSearchIndexLoadTime := time.Since(started)
+
+	if err != nil {
+		return 0, fmt.Errorf("error loading dashboards: %w, elapsed: %s", err, orgSearchIndexLoadTime.String())
+	}
 	i.logger.Info("Finish loading org dashboards", "elapsed", orgSearchIndexLoadTime, "orgId", orgID)
 
 	dashboardExtender := i.extender.GetDashboardExtender(orgID)
+
+	_, initOrgIndexSpan := i.tracer.Start(ctx, "searchV2 buildOrgIndex init org index", trace.WithAttributes(
+		attribute.Int64("org_id", orgID),
+		attribute.Int("dashboardCount", len(dashboards)),
+	))
+
 	index, err := initOrgIndex(dashboards, i.logger, dashboardExtender)
+
+	initOrgIndexSpan.End()
+
 	if err != nil {
 		return 0, fmt.Errorf("error initializing index: %w", err)
 	}
@@ -458,11 +502,11 @@ func (i *searchIndex) buildOrgIndex(ctx context.Context, orgID int64) (int, erro
 	orgSearchIndexBuildTime := orgSearchIndexTotalTime - orgSearchIndexLoadTime
 
 	i.logger.Info("Re-indexed dashboards for organization",
-		"orgId", orgID,
-		"orgSearchIndexLoadTime", orgSearchIndexLoadTime,
-		"orgSearchIndexBuildTime", orgSearchIndexBuildTime,
-		"orgSearchIndexTotalTime", orgSearchIndexTotalTime,
-		"orgSearchDashboardCount", len(dashboards))
+		i.withCtxData(ctx, "orgId", orgID,
+			"orgSearchIndexLoadTime", orgSearchIndexLoadTime,
+			"orgSearchIndexBuildTime", orgSearchIndexBuildTime,
+			"orgSearchIndexTotalTime", orgSearchIndexTotalTime,
+			"orgSearchDashboardCount", len(dashboards))...)
 
 	i.mu.Lock()
 	if oldIndex, ok := i.perOrgIndex[orgID]; ok {
@@ -481,7 +525,7 @@ func (i *searchIndex) buildOrgIndex(ctx context.Context, orgID int64) (int, erro
 		go func() {
 			if reader, cancel, err := index.readerForIndex(indexTypeDashboard); err == nil {
 				defer cancel()
-				updateUsageStats(context.Background(), reader, i.logger)
+				updateUsageStats(context.Background(), reader, i.logger, i.tracer)
 			}
 		}()
 	}
@@ -539,10 +583,20 @@ func (i *searchIndex) reIndexFromScratch(ctx context.Context) {
 	}
 }
 
+func (i *searchIndex) withCtxData(ctx context.Context, params ...any) []any {
+	traceID := tracing.TraceIDFromContext(ctx, false)
+	if traceID != "" {
+		params = append(params, "traceID", traceID)
+	}
+
+	return params
+}
+
 func (i *searchIndex) applyIndexUpdates(ctx context.Context, lastEventID int64) int64 {
-	events, err := i.eventStore.GetAllEventsAfter(context.Background(), lastEventID)
+	ctx = log.InitCounter(ctx)
+	events, err := i.eventStore.GetAllEventsAfter(ctx, lastEventID)
 	if err != nil {
-		i.logger.Error("can't load events", "error", err)
+		i.logger.Error("Can't load events", "error", err)
 		return lastEventID
 	}
 	if len(events) == 0 {
@@ -552,32 +606,32 @@ func (i *searchIndex) applyIndexUpdates(ctx context.Context, lastEventID int64) 
 	for _, e := range events {
 		err := i.applyEventOnIndex(ctx, e)
 		if err != nil {
-			i.logger.Error("can't apply event", "error", err)
+			i.logger.Error("Can't apply event", "error", err)
 			return lastEventID
 		}
 		lastEventID = e.Id
 	}
-	i.logger.Info("Index updates applied", "indexEventsAppliedElapsed", time.Since(started), "numEvents", len(events))
+	i.logger.Info("Index updates applied", i.withCtxData(ctx, "indexEventsAppliedElapsed", time.Since(started), "numEvents", len(events))...)
 	return lastEventID
 }
 
 func (i *searchIndex) applyEventOnIndex(ctx context.Context, e *store.EntityEvent) error {
-	i.logger.Debug("processing event", "event", e)
+	i.logger.Debug("Processing event", "event", e)
 
 	if !strings.HasPrefix(e.EntityId, "database/") {
-		i.logger.Warn("unknown storage", "entityId", e.EntityId)
+		i.logger.Warn("Unknown storage", "entityId", e.EntityId)
 		return nil
 	}
 	// database/org/entityType/path*
 	parts := strings.SplitN(strings.TrimPrefix(e.EntityId, "database/"), "/", 3)
 	if len(parts) != 3 {
-		i.logger.Error("can't parse entityId", "entityId", e.EntityId)
+		i.logger.Error("Can't parse entityId", "entityId", e.EntityId)
 		return nil
 	}
 	orgIDStr := parts[0]
 	orgID, err := strconv.ParseInt(orgIDStr, 10, 64)
 	if err != nil {
-		i.logger.Error("can't extract org ID", "entityId", e.EntityId)
+		i.logger.Error("Can't extract org ID", "entityId", e.EntityId)
 		return nil
 	}
 	kind := store.EntityType(parts[1])
@@ -702,13 +756,9 @@ func (i *searchIndex) updateDashboard(ctx context.Context, orgID int64, index *o
 
 	var folderUID string
 	if dash.folderID == 0 {
-		folderUID = "general"
+		folderUID = folder.GeneralFolderUID
 	} else {
-		var err error
-		folderUID, err = i.folderIdLookup(ctx, dash.folderID)
-		if err != nil {
-			return err
-		}
+		folderUID = dash.folderUID
 	}
 
 	location := folderUID
@@ -717,13 +767,12 @@ func (i *searchIndex) updateDashboard(ctx context.Context, orgID int64, index *o
 		return err
 	}
 
-	var actualPanelIDs []string
-
 	if location != "" {
 		location += "/"
 	}
 	location += dash.uid
 	panelDocs := getDashboardPanelDocs(dash, location)
+	actualPanelIDs := make([]string, 0, len(panelDocs))
 	for _, panelDoc := range panelDocs {
 		actualPanelIDs = append(actualPanelIDs, string(panelDoc.ID().Term()))
 		batch.Update(panelDoc.ID(), panelDoc)
@@ -746,125 +795,177 @@ func (i *searchIndex) updateDashboard(ctx context.Context, orgID int64, index *o
 }
 
 type sqlDashboardLoader struct {
-	sql    *sqlstore.SQLStore
-	logger log.Logger
+	sql      db.DB
+	logger   log.Logger
+	tracer   tracing.Tracer
+	settings setting.SearchSettings
 }
 
-func newSQLDashboardLoader(sql *sqlstore.SQLStore) *sqlDashboardLoader {
-	return &sqlDashboardLoader{sql: sql, logger: log.New("sqlDashboardLoader")}
+func newSQLDashboardLoader(sql db.DB, tracer tracing.Tracer, settings setting.SearchSettings) *sqlDashboardLoader {
+	return &sqlDashboardLoader{sql: sql, logger: log.New("sqlDashboardLoader"), tracer: tracer, settings: settings}
+}
+
+type dashboardsRes struct {
+	dashboards []*dashboardQueryResult
+	err        error
+}
+
+func (l sqlDashboardLoader) loadAllDashboards(ctx context.Context, limit int, orgID int64, dashboardUID string) chan *dashboardsRes {
+	ch := make(chan *dashboardsRes, 3)
+
+	go func() {
+		defer close(ch)
+
+		var lastID int64
+		for {
+			select {
+			case <-ctx.Done():
+				err := ctx.Err()
+				if err != nil {
+					ch <- &dashboardsRes{
+						dashboards: nil,
+						err:        err,
+					}
+				}
+				return
+			default:
+			}
+
+			dashboardQueryCtx, dashboardQuerySpan := l.tracer.Start(ctx, "sqlDashboardLoader dashboardQuery", trace.WithAttributes(
+				attribute.Int64("orgID", orgID),
+				attribute.String("dashboardUID", dashboardUID),
+				attribute.Int64("lastID", lastID),
+			))
+
+			rows := make([]*dashboardQueryResult, 0, limit)
+			err := l.sql.WithDbSession(dashboardQueryCtx, func(sess *db.Session) error {
+				sess.Table("dashboard").
+					Where("org_id = ?", orgID).
+					Where("deleted IS NULL") // don't index soft delete files
+
+				if lastID > 0 {
+					sess.Where("id > ?", lastID)
+				}
+
+				if dashboardUID != "" {
+					sess.Where("uid = ?", dashboardUID)
+				}
+
+				sess.Cols("id", "uid", "is_folder", "folder_id", "folder_uid", "data", "slug", "created", "updated")
+
+				sess.OrderBy("id ASC")
+				sess.Limit(limit)
+
+				return sess.Find(&rows)
+			})
+
+			dashboardQuerySpan.End()
+
+			if err != nil || len(rows) < limit || dashboardUID != "" {
+				ch <- &dashboardsRes{
+					dashboards: rows,
+					err:        err,
+				}
+				break
+			}
+
+			ch <- &dashboardsRes{
+				dashboards: rows,
+			}
+
+			if len(rows) > 0 {
+				lastID = rows[len(rows)-1].Id
+			}
+		}
+	}()
+
+	return ch
 }
 
 func (l sqlDashboardLoader) LoadDashboards(ctx context.Context, orgID int64, dashboardUID string) ([]dashboard, error) {
+	ctx, span := l.tracer.Start(ctx, "sqlDashboardLoader LoadDashboards", trace.WithAttributes(
+		attribute.Int64("orgID", orgID),
+	))
+	defer span.End()
+
 	var dashboards []dashboard
 
 	limit := 1
 
 	if dashboardUID == "" {
-		limit = 200
-		dashboards = make([]dashboard, 0, limit+1)
-
-		// Add the root folder ID (does not exist in SQL).
-		dashboards = append(dashboards, dashboard{
-			id:       0,
-			uid:      "",
-			isFolder: true,
-			folderID: 0,
-			slug:     "",
-			created:  time.Now(),
-			updated:  time.Now(),
-			info: &extract.DashboardInfo{
-				ID:    0,
-				Title: "General",
-			},
-		})
+		limit = l.settings.DashboardLoadingBatchSize
+		dashboards = make([]dashboard, 0, limit)
 	}
+
+	loadDatasourceCtx, loadDatasourceSpan := l.tracer.Start(ctx, "sqlDashboardLoader LoadDatasourceLookup", trace.WithAttributes(
+		attribute.Int64("orgID", orgID),
+	))
 
 	// key will allow name or uid
-	lookup, err := dslookup.LoadDatasourceLookup(ctx, orgID, l.sql)
+	lookup, err := kdash.LoadDatasourceLookup(loadDatasourceCtx, orgID, l.sql)
 	if err != nil {
+		loadDatasourceSpan.End()
 		return dashboards, err
 	}
+	loadDatasourceSpan.End()
 
-	var lastID int64
+	loadingDashboardCtx, cancelLoadingDashboardCtx := context.WithCancel(ctx)
+	defer cancelLoadingDashboardCtx()
+
+	dashboardsChannel := l.loadAllDashboards(loadingDashboardCtx, limit, orgID, dashboardUID)
 
 	for {
-		rows := make([]*dashboardQueryResult, 0, limit)
-
-		err = l.sql.WithDbSession(ctx, func(sess *sqlstore.DBSession) error {
-			sess.Table("dashboard").
-				Where("org_id = ?", orgID)
-
-			if lastID > 0 {
-				sess.Where("id > ?", lastID)
-			}
-
-			if dashboardUID != "" {
-				sess.Where("uid = ?", dashboardUID)
-			}
-
-			sess.Cols("id", "uid", "is_folder", "folder_id", "data", "slug", "created", "updated")
-
-			sess.OrderBy("id ASC")
-			sess.Limit(limit)
-
-			return sess.Find(&rows)
-		})
-
-		if err != nil {
-			return nil, err
+		res, ok := <-dashboardsChannel
+		if res != nil && res.err != nil {
+			l.logger.Error("Error when loading dashboards", "error", err, "orgID", orgID, "dashboardUID", dashboardUID)
+			break
 		}
 
+		if res == nil || !ok {
+			break
+		}
+
+		rows := res.dashboards
+
+		_, readDashboardSpan := l.tracer.Start(ctx, "sqlDashboardLoader readDashboard", trace.WithAttributes(
+			attribute.Int64("orgID", orgID),
+			attribute.Int("dashboardCount", len(rows)),
+		))
+
+		reader := kdash.NewStaticDashboardSummaryBuilder(lookup, false)
+
 		for _, row := range rows {
-			info, err := extract.ReadDashboard(bytes.NewReader(row.Data), lookup)
+			summary, _, err := reader(ctx, row.Uid, row.Data)
 			if err != nil {
 				l.logger.Warn("Error indexing dashboard data", "error", err, "dashboardId", row.Id, "dashboardSlug", row.Slug)
 				// But append info anyway for now, since we possibly extracted useful information.
 			}
 			dashboards = append(dashboards, dashboard{
-				id:       row.Id,
-				uid:      row.Uid,
-				isFolder: row.IsFolder,
-				folderID: row.FolderID,
-				slug:     row.Slug,
-				created:  row.Created,
-				updated:  row.Updated,
-				info:     info,
+				id:        row.Id,
+				uid:       row.Uid,
+				isFolder:  row.IsFolder,
+				folderID:  row.FolderID,
+				folderUID: row.FolderUID,
+				slug:      row.Slug,
+				created:   row.Created,
+				updated:   row.Updated,
+				summary:   summary,
 			})
-			lastID = row.Id
 		}
-
-		if len(rows) < limit || dashboardUID != "" {
-			break
-		}
+		readDashboardSpan.End()
 	}
 
 	return dashboards, err
 }
 
-func newFolderIDLookup(sql *sqlstore.SQLStore) folderUIDLookup {
-	return func(ctx context.Context, folderID int64) (string, error) {
-		uid := ""
-		err := sql.WithDbSession(ctx, func(sess *sqlstore.DBSession) error {
-			res, err := sess.Query("SELECT uid FROM dashboard WHERE id=?", folderID)
-			if err != nil {
-				return err
-			}
-			if len(res) > 0 {
-				uid = string(res[0]["uid"])
-			}
-			return nil
-		})
-		return uid, err
-	}
-}
-
 type dashboardQueryResult struct {
-	Id       int64
-	Uid      string
-	IsFolder bool   `xorm:"is_folder"`
-	FolderID int64  `xorm:"folder_id"`
-	Slug     string `xorm:"slug"`
-	Data     []byte
-	Created  time.Time
-	Updated  time.Time
+	Id        int64
+	Uid       string
+	IsFolder  bool   `xorm:"is_folder"`
+	FolderID  int64  `xorm:"folder_id"`
+	FolderUID string `xorm:"folder_uid"`
+	Slug      string `xorm:"slug"`
+	Data      []byte
+	Created   time.Time
+	Updated   time.Time
 }

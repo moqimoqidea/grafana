@@ -1,17 +1,14 @@
-import React, { PureComponent } from 'react';
+import { PureComponent } from 'react';
 import { connect, ConnectedProps } from 'react-redux';
 
-import { DataSourceInstanceSettings, getDataSourceRef } from '@grafana/data';
-import { DataSourcePicker } from '@grafana/runtime';
-import { Alert, InlineField, InlineFieldRow, VerticalGroup } from '@grafana/ui';
+import { AdHocVariableModel, DataSourceInstanceSettings, getDataSourceRef } from '@grafana/data';
+import { AdHocVariableForm } from 'app/features/dashboard-scene/settings/variables/components/AdHocVariableForm';
 import { StoreState } from 'app/types';
 
-import { VariableSectionHeader } from '../editor/VariableSectionHeader';
 import { initialVariableEditorState } from '../editor/reducer';
 import { getAdhocVariableEditorState } from '../editor/selectors';
 import { VariableEditorProps } from '../editor/types';
 import { getVariablesState } from '../state/selectors';
-import { AdHocVariableModel } from '../types';
 import { toKeyedVariableIdentifier } from '../utils';
 
 import { changeVariableDatasource } from './actions';
@@ -58,21 +55,13 @@ export class AdHocVariableEditorUnConnected extends PureComponent<Props> {
 
   render() {
     const { variable, extended } = this.props;
-    const infoText = extended?.infoText ?? null;
 
     return (
-      <VerticalGroup spacing="xs">
-        <VariableSectionHeader name="Options" />
-        <VerticalGroup spacing="sm">
-          <InlineFieldRow>
-            <InlineField label="Data source" labelWidth={20} htmlFor="data-source-picker">
-              <DataSourcePicker current={variable.datasource} onChange={this.onDatasourceChanged} noDefault />
-            </InlineField>
-          </InlineFieldRow>
-
-          {infoText ? <Alert title={infoText} severity="info" /> : null}
-        </VerticalGroup>
-      </VerticalGroup>
+      <AdHocVariableForm
+        datasource={variable.datasource ?? undefined}
+        onDataSourceChange={this.onDatasourceChanged}
+        infoText={extended?.infoText}
+      />
     );
   }
 }

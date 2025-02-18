@@ -1,14 +1,12 @@
 import { css } from '@emotion/css';
 import { saveAs } from 'file-saver';
-import React, { useCallback, useState } from 'react';
+import { useCallback, useState } from 'react';
 
-import { GrafanaTheme } from '@grafana/data';
-import { Button, ClipboardButton, HorizontalGroup, Stack, stylesFactory, TextArea, useTheme } from '@grafana/ui';
+import { Button, ClipboardButton, HorizontalGroup, TextArea, Stack } from '@grafana/ui';
 
 import { SaveDashboardFormProps } from '../types';
 
-export const SaveProvisionedDashboardForm: React.FC<SaveDashboardFormProps> = ({ dashboard, onCancel }) => {
-  const theme = useTheme();
+export const SaveProvisionedDashboardForm = ({ dashboard, onCancel }: Omit<SaveDashboardFormProps, 'isLoading'>) => {
   const [dashboardJSON, setDashboardJson] = useState(() => {
     const clone = dashboard.getSaveModelClone();
     delete clone.id;
@@ -22,7 +20,6 @@ export const SaveProvisionedDashboardForm: React.FC<SaveDashboardFormProps> = ({
     saveAs(blob, dashboard.title + '-' + new Date().getTime() + '.json');
   }, [dashboard.title, dashboardJSON]);
 
-  const styles = getStyles(theme);
   return (
     <>
       <Stack direction="column" gap={2}>
@@ -69,14 +66,12 @@ export const SaveProvisionedDashboardForm: React.FC<SaveDashboardFormProps> = ({
   );
 };
 
-const getStyles = stylesFactory((theme: GrafanaTheme) => {
-  return {
-    json: css`
-      height: 400px;
-      width: 100%;
-      overflow: auto;
-      resize: none;
-      font-family: monospace;
-    `,
-  };
-});
+const styles = {
+  json: css({
+    height: '400px',
+    width: '100%',
+    overflow: 'auto',
+    resize: 'none',
+    fontFamily: 'monospace',
+  }),
+};

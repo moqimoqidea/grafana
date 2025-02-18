@@ -1,8 +1,9 @@
 import { css } from '@emotion/css';
-import React from 'react';
+import { memo } from 'react';
 
 import { GrafanaTheme2, toOption } from '@grafana/data';
-import { AutoSizeInput, EditorRows, FlexItem, IconButton, Select, useStyles2 } from '@grafana/ui';
+import { EditorRows, FlexItem } from '@grafana/plugin-ui';
+import { AutoSizeInput, IconButton, Select, useStyles2 } from '@grafana/ui';
 
 import { LokiDatasource } from '../../datasource';
 import { binaryScalarDefs } from '../binaryScalarOperations';
@@ -20,7 +21,7 @@ export interface Props {
   onRunQuery: () => void;
 }
 
-export const NestedQuery = React.memo<Props>(
+export const NestedQuery = memo<Props>(
   ({ nestedQuery, index, datasource, onChange, onRemove, onRunQuery, showExplain }) => {
     const styles = useStyles2(getStyles);
 
@@ -29,6 +30,7 @@ export const NestedQuery = React.memo<Props>(
         <div className={styles.header}>
           <div className={styles.name}>Operator</div>
           <Select
+            aria-label="Select operator"
             width="auto"
             options={operators}
             value={toOption(nestedQuery.operator)}
@@ -70,7 +72,7 @@ export const NestedQuery = React.memo<Props>(
             />
           </div>
           <FlexItem grow={1} />
-          <IconButton name="times" size="sm" onClick={() => onRemove(index)} />
+          <IconButton name="times" size="sm" onClick={() => onRemove(index)} tooltip="Remove nested query" />
         </div>
         <div className={styles.body}>
           <EditorRows>

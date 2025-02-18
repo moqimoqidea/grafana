@@ -2,9 +2,10 @@ package api
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"hash/fnv"
 	"io"
 	"net/http"
 	"net/url"
@@ -12,24 +13,25 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/pkg/errors"
 	"gopkg.in/yaml.v3"
 
 	"github.com/grafana/grafana/pkg/api/response"
-	"github.com/grafana/grafana/pkg/models"
 	"github.com/grafana/grafana/pkg/services/accesscontrol"
+	contextmodel "github.com/grafana/grafana/pkg/services/contexthandler/model"
 	"github.com/grafana/grafana/pkg/services/datasourceproxy"
 	"github.com/grafana/grafana/pkg/services/datasources"
 	apimodels "github.com/grafana/grafana/pkg/services/ngalert/api/tooling/definitions"
 	ngmodels "github.com/grafana/grafana/pkg/services/ngalert/models"
 	"github.com/grafana/grafana/pkg/services/org"
-	"github.com/grafana/grafana/pkg/services/user"
 	"github.com/grafana/grafana/pkg/web"
 )
 
-var searchRegex = regexp.MustCompile(`\{(\w+)\}`)
+const (
+	namespaceQueryTag = "QUERY_NAMESPACE"
+	groupQueryTag     = "QUERY_GROUP"
+)
 
-var NotImplementedResp = ErrResp(http.StatusNotImplemented, errors.New("endpoint not implemented"), "")
+var searchRegex = regexp.MustCompile(`\{(\w+)\}`)
 
 func toMacaronPath(path string) string {
 	return string(searchRegex.ReplaceAllFunc([]byte(path), func(s []byte) []byte {
@@ -38,9 +40,9 @@ func toMacaronPath(path string) string {
 	}))
 }
 
-func getDatasourceByUID(ctx *models.ReqContext, cache datasources.CacheService, expectedType apimodels.Backend) (*datasources.DataSource, error) {
+func getDatasourceByUID(ctx *contextmodel.ReqContext, cache datasources.CacheService, expectedType apimodels.Backend) (*datasources.DataSource, error) {
 	datasourceUID := web.Params(ctx.Req)[":DatasourceUID"]
-	ds, err := cache.GetDatasourceByUID(ctx.Req.Context(), datasourceUID, ctx.SignedInUser, ctx.SkipCache)
+	ds, err := cache.GetDatasourceByUID(ctx.Req.Context(), datasourceUID, ctx.SignedInUser, ctx.SkipDSCache)
 	if err != nil {
 		return nil, err
 	}
@@ -73,12 +75,12 @@ func (w *safeMacaronWrapper) CloseNotify() <-chan bool {
 
 // createProxyContext creates a new request context that is provided down to the data source proxy.
 // The request context
-// 1. overwrites the underlying response writer used by a *models.ReqContext because AlertingProxy needs to intercept
+// 1. overwrites the underlying response writer used by a *contextmodel.ReqContext because AlertingProxy needs to intercept
 // the response from the data source to analyze it and probably change
 // 2. elevates the current user permissions to Editor if both conditions are met: RBAC is enabled, user does not have Editor role.
 // This is needed to bypass the plugin authorization, which still relies on the legacy roles.
 // This elevation can be considered safe because all upstream calls are protected by the RBAC on web request router level.
-func (p *AlertingProxy) createProxyContext(ctx *models.ReqContext, request *http.Request, response *response.NormalResponse) *models.ReqContext {
+func (p *AlertingProxy) createProxyContext(ctx *contextmodel.ReqContext, request *http.Request, response *response.NormalResponse) *contextmodel.ReqContext {
 	cpy := *ctx
 	cpyMCtx := *cpy.Context
 	cpyMCtx.Resp = web.NewResponseWriter(ctx.Req.Method, &safeMacaronWrapper{response})
@@ -89,7 +91,7 @@ func (p *AlertingProxy) createProxyContext(ctx *models.ReqContext, request *http
 	// Some data sources require legacy Editor role in order to perform mutating operations. In this case, we elevate permissions for the context that we
 	// will provide downstream.
 	// TODO (yuri) remove this after RBAC for plugins is implemented
-	if !p.ac.IsDisabled() && !ctx.SignedInUser.HasRole(org.RoleEditor) {
+	if !ctx.SignedInUser.HasRole(org.RoleEditor) {
 		newUser := *ctx.SignedInUser
 		newUser.OrgRole = org.RoleEditor
 		cpy.SignedInUser = &newUser
@@ -104,11 +106,11 @@ type AlertingProxy struct {
 
 // withReq proxies a different request
 func (p *AlertingProxy) withReq(
-	ctx *models.ReqContext,
+	ctx *contextmodel.ReqContext,
 	method string,
 	u *url.URL,
 	body io.Reader,
-	extractor func(*response.NormalResponse) (interface{}, error),
+	extractor func(*response.NormalResponse) (any, error),
 	headers map[string]string,
 ) response.Response {
 	req, err := http.NewRequest(method, u.String(), body)
@@ -144,7 +146,7 @@ func (p *AlertingProxy) withReq(
 		// and it is successfully decoded and contains a message
 		// return this as response error message
 		if strings.HasPrefix(resp.Header().Get("Content-Type"), "application/json") {
-			var m map[string]interface{}
+			var m map[string]any
 			if err := json.Unmarshal(resp.Body(), &m); err == nil {
 				if message, ok := m["message"]; ok {
 					errMessageStr, isString := message.(string)
@@ -174,8 +176,8 @@ func (p *AlertingProxy) withReq(
 	return response.JSON(status, b)
 }
 
-func yamlExtractor(v interface{}) func(*response.NormalResponse) (interface{}, error) {
-	return func(resp *response.NormalResponse) (interface{}, error) {
+func yamlExtractor(v any) func(*response.NormalResponse) (any, error) {
+	return func(resp *response.NormalResponse) (any, error) {
 		contentType := resp.Header().Get("Content-Type")
 		if !strings.Contains(contentType, "yaml") {
 			return nil, fmt.Errorf("unexpected content type from upstream. expected YAML, got %v", contentType)
@@ -189,12 +191,12 @@ func yamlExtractor(v interface{}) func(*response.NormalResponse) (interface{}, e
 	}
 }
 
-func jsonExtractor(v interface{}) func(*response.NormalResponse) (interface{}, error) {
+func jsonExtractor(v any) func(*response.NormalResponse) (any, error) {
 	if v == nil {
 		// json unmarshal expects a pointer
-		v = &map[string]interface{}{}
+		v = &map[string]any{}
 	}
-	return func(resp *response.NormalResponse) (interface{}, error) {
+	return func(resp *response.NormalResponse) (any, error) {
 		contentType := resp.Header().Get("Content-Type")
 		if !strings.Contains(contentType, "json") {
 			return nil, fmt.Errorf("unexpected content type from upstream. expected JSON, got %v", contentType)
@@ -203,77 +205,23 @@ func jsonExtractor(v interface{}) func(*response.NormalResponse) (interface{}, e
 	}
 }
 
-func messageExtractor(resp *response.NormalResponse) (interface{}, error) {
+func messageExtractor(resp *response.NormalResponse) (any, error) {
 	return map[string]string{"message": string(resp.Body())}, nil
 }
 
-func validateCondition(ctx context.Context, c ngmodels.Condition, user *user.SignedInUser, skipCache bool, datasourceCache datasources.CacheService) error {
-	if len(c.Data) == 0 {
-		return nil
-	}
-
-	refIDs, err := validateQueriesAndExpressions(ctx, c.Data, user, skipCache, datasourceCache)
-	if err != nil {
-		return err
-	}
-
-	t := make([]string, 0, len(refIDs))
-	for refID := range refIDs {
-		t = append(t, refID)
-	}
-	if _, ok := refIDs[c.Condition]; !ok {
-		return fmt.Errorf("condition %s not found in any query or expression: it should be one of: [%s]", c.Condition, strings.Join(t, ","))
-	}
-	return nil
-}
-
-// conditionValidator returns a curried validateCondition that accepts only condition
-func conditionValidator(c *models.ReqContext, cache datasources.CacheService) func(ngmodels.Condition) error {
-	return func(condition ngmodels.Condition) error {
-		return validateCondition(c.Req.Context(), condition, c.SignedInUser, c.SkipCache, cache)
-	}
-}
-
-func validateQueriesAndExpressions(ctx context.Context, data []ngmodels.AlertQuery, user *user.SignedInUser, skipCache bool, datasourceCache datasources.CacheService) (map[string]struct{}, error) {
-	refIDs := make(map[string]struct{})
-	if len(data) == 0 {
-		return nil, nil
-	}
-
-	for _, query := range data {
-		datasourceUID, err := query.GetDatasource()
-		if err != nil {
-			return nil, err
-		}
-
-		isExpression, err := query.IsExpression()
-		if err != nil {
-			return nil, err
-		}
-		if isExpression {
-			refIDs[query.RefID] = struct{}{}
-			continue
-		}
-
-		_, err = datasourceCache.GetDatasourceByUID(ctx, datasourceUID, user, skipCache)
-		if err != nil {
-			return nil, fmt.Errorf("invalid query %s: %w: %s", query.RefID, err, datasourceUID)
-		}
-		refIDs[query.RefID] = struct{}{}
-	}
-	return refIDs, nil
-}
-
 // ErrorResp creates a response with a visible error
-func ErrResp(status int, err error, msg string, args ...interface{}) *response.NormalResponse {
+func ErrResp(status int, err error, msg string, args ...any) *response.NormalResponse {
 	if msg != "" {
-		err = errors.WithMessagef(err, msg, args...)
+		msg += ": %w"
+		args = append(args, err)
+		err = fmt.Errorf(msg, args...)
 	}
 	return response.Error(status, err.Error(), err)
 }
 
 // accessForbiddenResp creates a response of forbidden access.
 func accessForbiddenResp() response.Response {
+	//nolint:stylecheck // Grandfathered capitalization of error.
 	return ErrResp(http.StatusForbidden, errors.New("Permission denied"), "")
 }
 
@@ -288,4 +236,39 @@ func containsProvisionedAlerts(provenances map[string]ngmodels.Provenance, rules
 		}
 	}
 	return false
+}
+
+func getHash(hashSlice []string) uint64 {
+	sum := fnv.New64()
+	for _, str := range hashSlice {
+		_, _ = sum.Write([]byte(str))
+	}
+	hash := sum.Sum64()
+	return hash
+}
+
+func getRulesGroupParam(ctx *contextmodel.ReqContext, pathGroup string) (string, error) {
+	if pathGroup == groupQueryTag {
+		group := ctx.Query("group")
+		if group == "" {
+			return "", fmt.Errorf("group query parameter is empty")
+		}
+
+		return group, nil
+	}
+
+	return pathGroup, nil
+}
+
+func getRulesNamespaceParam(ctx *contextmodel.ReqContext, pathNamespace string) (string, error) {
+	if pathNamespace == namespaceQueryTag {
+		namespace := ctx.Query("namespace")
+		if namespace == "" {
+			return "", fmt.Errorf("namespace query parameter is empty")
+		}
+
+		return namespace, nil
+	}
+
+	return pathNamespace, nil
 }

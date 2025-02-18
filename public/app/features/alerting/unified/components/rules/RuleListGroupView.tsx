@@ -1,8 +1,9 @@
-import React, { FC, useMemo } from 'react';
+import { useEffect, useMemo } from 'react';
 
-import { AccessControlAction } from 'app/types';
 import { CombinedRuleNamespace } from 'app/types/unified-alerting';
 
+import { LogMessages, logInfo } from '../../Analytics';
+import { AlertingAction } from '../../hooks/useAbilities';
 import { isCloudRulesSource, isGrafanaRulesSource } from '../../utils/datasource';
 import { Authorize } from '../Authorize';
 
@@ -14,7 +15,7 @@ interface Props {
   expandAll: boolean;
 }
 
-export const RuleListGroupView: FC<Props> = ({ namespaces, expandAll }) => {
+export const RuleListGroupView = ({ namespaces, expandAll }: Props) => {
   const [grafanaNamespaces, cloudNamespaces] = useMemo(() => {
     const sorted = namespaces
       .map((namespace) => ({
@@ -28,12 +29,16 @@ export const RuleListGroupView: FC<Props> = ({ namespaces, expandAll }) => {
     ];
   }, [namespaces]);
 
+  useEffect(() => {
+    logInfo(LogMessages.loadedList);
+  }, []);
+
   return (
     <>
-      <Authorize actions={[AccessControlAction.AlertingRuleRead]}>
+      <Authorize actions={[AlertingAction.ViewAlertRule]}>
         <GrafanaRules namespaces={grafanaNamespaces} expandAll={expandAll} />
       </Authorize>
-      <Authorize actions={[AccessControlAction.AlertingRuleExternalRead]}>
+      <Authorize actions={[AlertingAction.ViewExternalAlertRule]}>
         <CloudRules namespaces={cloudNamespaces} expandAll={expandAll} />
       </Authorize>
     </>

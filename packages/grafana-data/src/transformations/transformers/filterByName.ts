@@ -8,6 +8,7 @@ import { DataTransformerID } from './ids';
 export interface FilterFieldsByNameTransformerOptions {
   include?: RegexpOrNamesMatcherOptions;
   exclude?: RegexpOrNamesMatcherOptions;
+  byVariable?: boolean;
 }
 
 export const filterFieldsByNameTransformer: DataTransformerInfo<FilterFieldsByNameTransformerOptions> = {
@@ -17,27 +18,41 @@ export const filterFieldsByNameTransformer: DataTransformerInfo<FilterFieldsByNa
   defaultOptions: {},
 
   /**
-   * Return a modified copy of the series.  If the transform is not or should not
+   * Return a modified copy of the series. If the transform is not or should not
    * be applied, just return the input series
    */
-  operator: (options, replace) => (source) =>
+  operator: (options, ctx) => (source) =>
     source.pipe(
       filterFieldsTransformer.operator(
         {
-          include: getMatcherConfig(options.include),
-          exclude: getMatcherConfig(options.exclude),
+          include: getMatcherConfig(options.include, options.byVariable),
+          exclude: getMatcherConfig(options.exclude, options.byVariable),
         },
-        replace
+        ctx
       )
     ),
 };
 
-const getMatcherConfig = (options?: RegexpOrNamesMatcherOptions): MatcherConfig | undefined => {
+// Exported to share with other implementations, but not exported to `@grafana/data`
+export const getMatcherConfig = (
+  options?: RegexpOrNamesMatcherOptions,
+  byVariable?: boolean
+): MatcherConfig | undefined => {
   if (!options) {
     return undefined;
   }
 
-  const { names, pattern } = options;
+  const { names, pattern, variable } = options;
+
+  if (byVariable && variable) {
+    const stringOfNames = variable;
+
+    if (/\{.*\}/.test(stringOfNames)) {
+      const namesFromString = stringOfNames.slice(1).slice(0, -1).split(',');
+      return { id: FieldMatcherID.byNames, options: { names: namesFromString } };
+    }
+    return { id: FieldMatcherID.byNames, options: { names: stringOfNames.split(',') } };
+  }
 
   if ((!Array.isArray(names) || names.length === 0) && !pattern) {
     return undefined;

@@ -2,6 +2,21 @@ import { DashboardLoadedEvent } from '@grafana/data';
 
 import { CloudWatchQuery } from '../types';
 
+const baseLogsQuery = {
+  datasource: {
+    type: 'cloudwatch',
+    uid: 'P7DC3E4760CFAC4AP',
+  },
+  expression: 'fields @timestamp, @message | sort @timestamp desc | limit 300     ',
+  id: '',
+  logGroupNames: ['/aws/lambda/hello-world', '/aws/sagemaker/Endpoints/test', '/aws/sagemaker/test'],
+  namespace: '',
+  queryMode: 'Logs',
+  refId: 'A',
+  region: 'default',
+  statsGroups: [],
+};
+
 export const CloudWatchDashboardLoadedEvent = new DashboardLoadedEvent({
   dashboardId: 'dashboard123',
   orgId: 1,
@@ -9,6 +24,31 @@ export const CloudWatchDashboardLoadedEvent = new DashboardLoadedEvent({
   grafanaVersion: 'v9.0.0',
   queries: {
     cloudwatch: [
+      {
+        accountId: '123456789',
+        datasource: {
+          type: 'cloudwatch',
+          uid: '123',
+        },
+        dimensions: {
+          InstanceId: 'i-123',
+        },
+        expression: '',
+        hide: false,
+        id: '',
+        label: '',
+        matchExact: true,
+        metricEditorMode: 0,
+        metricName: 'CPUUtilization',
+        metricQueryType: 0,
+        namespace: 'AWS/EC2',
+        period: '',
+        queryMode: 'Metrics',
+        refId: 'A',
+        region: 'us-east-1',
+        sqlExpression: '',
+        statistic: 'Average',
+      },
       {
         alias: '',
         datasource: {
@@ -435,18 +475,23 @@ export const CloudWatchDashboardLoadedEvent = new DashboardLoadedEvent({
         statistic: 'Average',
       },
       {
-        datasource: {
-          type: 'cloudwatch',
-          uid: 'P7DC3E4760CFAC4AP',
-        },
-        expression: 'fields @timestamp, @message | sort @timestamp desc | limit 300     ',
-        id: '',
-        logGroupNames: ['/aws/lambda/hello-world', '/aws/sagemaker/Endpoints/test', '/aws/sagemaker/test'],
-        namespace: '',
-        queryMode: 'Logs',
-        refId: 'A',
-        region: 'default',
-        statsGroups: [],
+        ...baseLogsQuery,
+      },
+      {
+        ...baseLogsQuery,
+        queryLanguage: 'PPL',
+      },
+      {
+        ...baseLogsQuery,
+        queryLanguage: 'PPL',
+      },
+      {
+        ...baseLogsQuery,
+        queryLanguage: 'SQL',
+      },
+      {
+        ...baseLogsQuery,
+        queryLanguage: 'CWLI',
       },
       {
         alias: '',
@@ -709,6 +754,30 @@ export const CloudWatchDashboardLoadedEvent = new DashboardLoadedEvent({
         region: 'default',
         sqlExpression: '',
         statistic: 'Average',
+      },
+      {
+        alias: '',
+        datasource: {
+          type: 'cloudwatch',
+          uid: 'abc',
+        },
+        dimensions: {
+          InstanceId: '*',
+        },
+        expression: 'a / ',
+        hide: false,
+        id: '',
+        matchExact: true,
+        metricEditorMode: 0,
+        metricName: 'CPUUtilization',
+        metricQueryType: 0,
+        namespace: 'AWS/EC2',
+        period: '',
+        queryMode: '',
+        refId: 'B',
+        region: 'default',
+        sqlExpression: '',
+        statistic: '',
       },
     ] as CloudWatchQuery[],
   },

@@ -3,23 +3,29 @@ package starimpl
 import (
 	"context"
 	"testing"
+	"time"
 
-	"github.com/grafana/grafana/pkg/services/sqlstore"
-	"github.com/grafana/grafana/pkg/services/star"
 	"github.com/stretchr/testify/require"
+
+	"github.com/grafana/grafana/pkg/infra/db"
+	"github.com/grafana/grafana/pkg/services/star"
+	"github.com/grafana/grafana/pkg/tests/testsuite"
 )
 
-type getStore func(*sqlstore.SQLStore) store
+func TestMain(m *testing.M) {
+	testsuite.Run(m)
+}
+
+type getStore func(db.DB) store
 
 func testIntegrationUserStarsDataAccess(t *testing.T, fn getStore) {
-	if testing.Short() {
-		t.Skip("skipping integration test")
-	}
+	t.Helper()
+
 	t.Run("Testing User Stars Data Access", func(t *testing.T) {
-		ss := sqlstore.InitTestDB(t)
+		ss := db.InitTestDB(t)
 		starStore := fn(ss)
 
-		t.Run("Given saved star", func(t *testing.T) {
+		t.Run("Given saved star by dashboard id", func(t *testing.T) {
 			cmd := star.StarDashboardCommand{
 				DashboardID: 10,
 				UserID:      12,
@@ -59,22 +65,72 @@ func testIntegrationUserStarsDataAccess(t *testing.T, fn getStore) {
 			})
 		})
 
+		t.Run("Given saved star by dashboard UID", func(t *testing.T) {
+			cmd := star.StarDashboardCommand{
+				DashboardUID: "test",
+				OrgID:        1,
+				UserID:       12,
+			}
+			err := starStore.Insert(context.Background(), &cmd)
+			require.NoError(t, err)
+
+			t.Run("Get should return true when starred", func(t *testing.T) {
+				query := star.IsStarredByUserQuery{UserID: 12, DashboardUID: "test", OrgID: 1}
+				isStarred, err := starStore.Get(context.Background(), &query)
+				require.NoError(t, err)
+				require.True(t, isStarred)
+			})
+
+			t.Run("Get should return false when not starred", func(t *testing.T) {
+				query := star.IsStarredByUserQuery{UserID: 12, DashboardUID: "testing", OrgID: 1}
+				isStarred, err := starStore.Get(context.Background(), &query)
+				require.NoError(t, err)
+				require.False(t, isStarred)
+			})
+
+			t.Run("List should return a list of size 1", func(t *testing.T) {
+				query := star.GetUserStarsQuery{UserID: 12}
+				result, err := starStore.List(context.Background(), &query)
+				require.NoError(t, err)
+				require.Equal(t, 1, len(result.UserStars))
+			})
+
+			t.Run("Delete should remove the star", func(t *testing.T) {
+				deleteQuery := star.UnstarDashboardCommand{DashboardUID: "test", OrgID: 1, UserID: 12}
+				err := starStore.Delete(context.Background(), &deleteQuery)
+				require.NoError(t, err)
+				getQuery := star.IsStarredByUserQuery{UserID: 12, DashboardUID: "test", OrgID: 1}
+				isStarred, err := starStore.Get(context.Background(), &getQuery)
+				require.NoError(t, err)
+				require.False(t, isStarred)
+			})
+		})
+
 		t.Run("DeleteByUser should remove the star for user", func(t *testing.T) {
 			star1 := star.StarDashboardCommand{
-				DashboardID: 10,
-				UserID:      12,
+				DashboardUID: "test",
+				OrgID:        1,
+				Updated:      time.Now(),
+				DashboardID:  10,
+				UserID:       12,
 			}
 			err := starStore.Insert(context.Background(), &star1)
 			require.NoError(t, err)
 			star2 := star.StarDashboardCommand{
-				DashboardID: 11,
-				UserID:      12,
+				DashboardUID: "test2",
+				OrgID:        1,
+				Updated:      time.Now(),
+				DashboardID:  11,
+				UserID:       12,
 			}
 			err = starStore.Insert(context.Background(), &star2)
 			require.NoError(t, err)
 			star3 := star.StarDashboardCommand{
-				DashboardID: 11,
-				UserID:      11,
+				DashboardUID: "test2",
+				OrgID:        1,
+				Updated:      time.Now(),
+				DashboardID:  11,
+				UserID:       11,
 			}
 			err = starStore.Insert(context.Background(), &star3)
 			require.NoError(t, err)

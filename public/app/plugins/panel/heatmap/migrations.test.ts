@@ -1,6 +1,6 @@
 import { PanelModel, FieldConfigSource } from '@grafana/data';
 
-import { heatmapChangedHandler } from './migrations';
+import { heatmapChangedHandler, heatmapMigrationHandler } from './migrations';
 
 describe('Heatmap Migrations', () => {
   let prevFieldConfig: FieldConfigSource;
@@ -23,21 +23,21 @@ describe('Heatmap Migrations', () => {
       prevFieldConfig
     );
     expect(panel).toMatchInlineSnapshot(`
-      Object {
-        "fieldConfig": Object {
-          "defaults": Object {},
-          "overrides": Array [],
+      {
+        "fieldConfig": {
+          "defaults": {},
+          "overrides": [],
         },
-        "options": Object {
+        "options": {
           "calculate": true,
-          "calculation": Object {
-            "xBuckets": Object {
+          "calculation": {
+            "xBuckets": {
               "mode": "count",
               "value": "100",
             },
-            "yBuckets": Object {
+            "yBuckets": {
               "mode": "count",
-              "scale": Object {
+              "scale": {
                 "log": 2,
                 "type": "log",
               },
@@ -46,10 +46,10 @@ describe('Heatmap Migrations', () => {
           },
           "cellGap": 2,
           "cellRadius": 10,
-          "cellValues": Object {
+          "cellValues": {
             "decimals": undefined,
           },
-          "color": Object {
+          "color": {
             "exponent": 0.5,
             "fill": "#b4ff00",
             "max": 100,
@@ -60,24 +60,24 @@ describe('Heatmap Migrations', () => {
             "scheme": "BuGn",
             "steps": 128,
           },
-          "exemplars": Object {
+          "exemplars": {
             "color": "rgba(255,0,255,0.7)",
           },
-          "filterValues": Object {
+          "filterValues": {
             "le": 1e-9,
           },
-          "legend": Object {
+          "legend": {
             "show": true,
           },
-          "rowsFrame": Object {
+          "rowsFrame": {
             "layout": "auto",
           },
           "showValue": "never",
-          "tooltip": Object {
-            "show": true,
+          "tooltip": {
+            "mode": "single",
             "yHistogram": true,
           },
-          "yAxis": Object {
+          "yAxis": {
             "axisPlacement": "left",
             "axisWidth": 400,
             "decimals": 6,
@@ -85,6 +85,63 @@ describe('Heatmap Migrations', () => {
             "min": 7,
             "reverse": false,
             "unit": "short",
+          },
+        },
+      }
+    `);
+  });
+
+  it('Null Options', () => {
+    const panel = {} as PanelModel;
+    panel.options = null;
+    panel.options = heatmapMigrationHandler(panel);
+    expect(panel).toMatchInlineSnapshot(`
+      {
+        "fieldConfig": {
+          "defaults": {},
+          "overrides": [],
+        },
+        "options": {
+          "calculate": true,
+          "calculation": {},
+          "cellGap": 2,
+          "cellRadius": undefined,
+          "cellValues": {
+            "decimals": undefined,
+          },
+          "color": {
+            "exponent": 0.5,
+            "fill": undefined,
+            "max": undefined,
+            "min": undefined,
+            "mode": "scheme",
+            "reverse": false,
+            "scale": "exponential",
+            "scheme": "Oranges",
+            "steps": 128,
+          },
+          "exemplars": {
+            "color": "rgba(255,0,255,0.7)",
+          },
+          "legend": {
+            "show": false,
+          },
+          "rowsFrame": {
+            "layout": "auto",
+          },
+          "showValue": "never",
+          "tooltip": {
+            "mode": "none",
+            "yHistogram": false,
+          },
+          "yAxis": {
+            "axisPlacement": "left",
+            "axisWidth": undefined,
+            "decimals": undefined,
+            "max": undefined,
+            "min": undefined,
+            "reverse": false,
+            "unit": undefined,
           },
         },
       }

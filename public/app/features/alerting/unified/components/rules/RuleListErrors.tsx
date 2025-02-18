@@ -1,31 +1,26 @@
 import { css } from '@emotion/css';
 import { SerializedError } from '@reduxjs/toolkit';
 import pluralize from 'pluralize';
-import React, { useMemo, ReactElement, useState, FC } from 'react';
+import { FC, ReactElement, useMemo, useState } from 'react';
 import { useLocalStorage } from 'react-use';
 
 import { DataSourceInstanceSettings, GrafanaTheme2 } from '@grafana/data';
 import { Alert, Button, Tooltip, useStyles2 } from '@grafana/ui';
 
 import { useUnifiedAlertingSelector } from '../../hooks/useUnifiedAlertingSelector';
-import { getRulesDataSources, GRAFANA_RULES_SOURCE_NAME } from '../../utils/datasource';
+import { GRAFANA_RULES_SOURCE_NAME, getRulesDataSources } from '../../utils/datasource';
 import { makeDataSourceLink } from '../../utils/misc';
 import { isRulerNotSupportedResponse } from '../../utils/rules';
 
 export function RuleListErrors(): ReactElement {
   const [expanded, setExpanded] = useState(false);
   const [closed, setClosed] = useLocalStorage('grafana.unifiedalerting.hideErrors', false);
-  const dataSourceConfigRequests = useUnifiedAlertingSelector((state) => state.dataSources);
   const promRuleRequests = useUnifiedAlertingSelector((state) => state.promRules);
   const rulerRuleRequests = useUnifiedAlertingSelector((state) => state.rulerRules);
   const styles = useStyles2(getStyles);
 
   const errors = useMemo((): JSX.Element[] => {
-    const [dataSourceConfigErrors, promRequestErrors, rulerRequestErrors] = [
-      dataSourceConfigRequests,
-      promRuleRequests,
-      rulerRuleRequests,
-    ].map((requests) =>
+    const [promRequestErrors, rulerRequestErrors] = [promRuleRequests, rulerRuleRequests].map((requests) =>
       getRulesDataSources().reduce<Array<{ error: SerializedError; dataSource: DataSourceInstanceSettings }>>(
         (result, dataSource) => {
           const error = requests[dataSource.name]?.error;
@@ -49,20 +44,14 @@ export function RuleListErrors(): ReactElement {
       result.push(<>Failed to load Grafana rules config: {grafanaRulerError.message || 'Unknown error.'}</>);
     }
 
-    dataSourceConfigErrors.forEach(({ dataSource, error }) => {
-      result.push(
-        <>
-          Failed to load the data source configuration for{' '}
-          <a href={makeDataSourceLink(dataSource)}>{dataSource.name}</a>: {error.message || 'Unknown error.'}
-        </>
-      );
-    });
-
     promRequestErrors.forEach(({ dataSource, error }) =>
       result.push(
         <>
-          Failed to load rules state from <a href={makeDataSourceLink(dataSource)}>{dataSource.name}</a>:{' '}
-          {error.message || 'Unknown error.'}
+          Failed to load rules state from{' '}
+          <a href={makeDataSourceLink(dataSource.uid)} className={styles.dsLink}>
+            {dataSource.name}
+          </a>
+          : {error.message || 'Unknown error.'}
         </>
       )
     );
@@ -70,14 +59,17 @@ export function RuleListErrors(): ReactElement {
     rulerRequestErrors.forEach(({ dataSource, error }) =>
       result.push(
         <>
-          Failed to load rules config from <a href={makeDataSourceLink(dataSource)}>{dataSource.name}</a>:{' '}
-          {error.message || 'Unknown error.'}
+          Failed to load rules config from{' '}
+          <a href={makeDataSourceLink(dataSource.uid)} className={styles.dsLink}>
+            {dataSource.name}
+          </a>
+          : {error.message || 'Unknown error.'}
         </>
       )
     );
 
     return result;
-  }, [dataSourceConfigRequests, promRuleRequests, rulerRuleRequests]);
+  }, [promRuleRequests, rulerRuleRequests, styles.dsLink]);
 
   return (
     <>
@@ -134,11 +126,14 @@ const ErrorSummaryButton: FC<ErrorSummaryProps> = ({ count, onClick }) => {
 };
 
 const getStyles = (theme: GrafanaTheme2) => ({
-  moreButton: css`
-    padding: 0;
-  `,
-  floatRight: css`
-    display: flex;
-    justify-content: flex-end;
-  `,
+  moreButton: css({
+    padding: 0,
+  }),
+  floatRight: css({
+    display: 'flex',
+    justifyContent: 'flex-end',
+  }),
+  dsLink: css({
+    fontWeight: theme.typography.fontWeightBold,
+  }),
 });
